@@ -5,6 +5,9 @@ search box and every keybinding. Press a shortcut to see what it does, hold
 modifiers to filter, point at a binding to see its keys. Nothing runs while
 it is open.
 
+Needs one manual step after installing to take over SUPER + K (see
+[Set up](#set-up-super--k)).
+
 ![Extended Keybindings Viewer while holding SUPER + SHIFT](preview.png)
 
 ## Use
@@ -22,10 +25,18 @@ your theme.
 
 ```bash
 omarchy plugin add https://github.com/erikrjohansson/omarchy-extended-keybindings-viewer.git --enable
+```
+
+## Set up SUPER + K
+
+Until you do this once, SUPER + K still opens Omarchy's own list. Open the
+viewer:
+
+```bash
 omarchy-shell shell toggle io.github.erikrjohansson.extended-keybindings-viewer
 ```
 
-Click **Set up** in the overlay. It adds three marked lines to the end of
+Then click **Set up** in the overlay. It adds three marked lines to the end of
 `~/.config/hypr/bindings.lua` so SUPER + K opens Extended Keybindings Viewer,
 reloads Hyprland and reports any error. Nothing else in the file changes.
 

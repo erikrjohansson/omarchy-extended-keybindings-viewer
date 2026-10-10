@@ -1,0 +1,291 @@
+#!/bin/bash
+# Data helper for the Extended Keybindings Viewer overlay. Nothing here runs a binding.
+#
+# extended-keybindings-viewer          Omarchy's keybinding records (label<TAB>dispatcher<TAB>arg),
+#                         from its own Super+K parser, so the key map lists exactly
+#                         what `omarchy menu keybindings` lists.
+# extended-keybindings-viewer keys     The keyboard: "layout", "code", "alias", "bind", "res",
+#                         "char", "universal" and key lines (see `keys` below).
+# extended-keybindings-viewer setup    Adds the Extended Keybindings Viewer lines to ~/.config/hypr/bindings.lua
+#                         (once) and reloads Hyprland. Run only on request.
+# extended-keybindings-viewer unsetup  Removes that block again and reloads Hyprland.
+# extended-keybindings-viewer status   "setup" when it is loaded in Hyprland (or Set up's
+#                         block is in bindings.lua), else "not-setup".
+#
+# Errors go to stderr as one line and the exit status is non-zero.
+
+plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+bindings_file="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+lua_path=${plugin_dir//\\/\\\\}
+lua_path=${lua_path//\"/\\\"}
+setup_line="dofile(\"$lua_path/bindings.lua\")"
+
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+# --- Omarchy's keybindings script ------------------------------------------
+# Its functions are reused by sourcing everything before its entry point. If
+# that entry point is not exactly where it is expected (Omarchy changed the
+# script), nothing is sourced: sourcing the whole script would run its
+# interactive menu. Sourced at top level, because the script declares global
+# associative arrays that a `declare` inside a function would make local.
+menu_entry='if [[ $1 == "--print" || $1 == "-p" ]]; then'
+menu=$(command -v omarchy-menu-keybindings)
+menu_loaded=false
+if [[ -n $menu ]] && (( $(grep -cxF -- "$menu_entry" "$menu") == 1 )); then
+  source <(awk -v entry="$menu_entry" '$0 == entry { exit } { print }' "$menu")
+  declare -F output_binding_records >/dev/null && declare -F build_lua_bind_cache >/dev/null && menu_loaded=true
+fi
+
+records() {
+  command -v hyprctl >/dev/null || fail "hyprctl is not installed"
+  if $menu_loaded; then
+    output_binding_records
+  elif [[ -n $menu ]]; then
+    # Unknown script layout: the plain list only (no physical-key data).
+    "$menu" --print
+  else
+    fail "omarchy-menu-keybindings was not found"
+  fi
+}
+
+# --- Keyboard layout ---------------------------------------------------------
+# Compiles one layout and prints its key lines with a prefix: "" for the layout
+# shown on the keys (the active one), "res" for the one Hyprland matches
+# bindings against (the first one, unless input:resolve_binds_by_sym is set).
+compile_layout() {
+  local prefix=$1 layout=$2 variant=$3 group=${4:-1}
+  local args=()
+  if [[ -n $kb_file ]]; then
+    args=(--keymap "$kb_file")
+  else
+    args=(--layout "$layout")
+    [[ -n $variant ]] && args+=(--variant "$variant")
+    [[ -n $options ]] && args+=(--options "$options")
+    [[ -n $rules ]] && args+=(--rules "$rules")
+    [[ -n $model ]] && args+=(--model "$model")
+  fi
+
+  # A single compiled layout is group 1; a kb_file keymap holds every layout
+  # as groups, so the wanted one is picked by number.
+  xkbcli compile-keymap "${args[@]}" </dev/null 2>/dev/null | awk -v prefix="$prefix" -v group="$group" '
+    /xkb_keycodes/ { codes = 1 }
+    codes && prefix == "" && match($0, /^[[:space:]]*<([A-Za-z0-9_+-]+)>[[:space:]]*=[[:space:]]*([0-9]+);/, m) { printf "code\t%s\t%s\n", m[2], m[1] }
+    codes && prefix == "" && match($0, /alias[[:space:]]*<([A-Za-z0-9_+-]+)>[[:space:]]*=[[:space:]]*<([A-Za-z0-9_+-]+)>;/, m) { printf "alias\t%s\t%s\n", m[1], m[2] }
+    /xkb_types/ { codes = 0 }
+    /xkb_symbols/ { symbols = 1 }
+    !symbols { next }
+    /key <[A-Za-z0-9_+-]+>/ { block = ""; inkey = 1 }
+    inkey { block = block " " $0 }
+    inkey && /};/ {
+      inkey = 0
+      # The wanted group, else group 1 (keys shared by every layout, such
+      # as modifiers, have a single unnumbered or symbols[1] array).
+      levels[1] = ""
+      if (match(block, "symbols\\[" group "\\][[:space:]]*=[[:space:]]*\\[([^]]*)\\]", lv)) levels[1] = lv[1]
+      else if (match(block, /symbols\[1\][[:space:]]*=[[:space:]]*\[([^]]*)\]/, lv)) levels[1] = lv[1]
+      else if (block !~ /symbols\[/ && match(block, /\[([^]]*)\]/, lv)) levels[1] = lv[1]
+      if (match(block, /key <([A-Za-z0-9_+-]+)>/, name) && levels[1] != "") {
+        n = split(levels[1], sym, ",")
+        gsub(/ /, "", sym[1]); gsub(/ /, "", sym[2])
+        found++
+        printf "%s%s\t%s\t%s\n", (prefix == "" ? "" : prefix "\t"), name[1], sym[1], (n > 1 ? sym[2] : "")
+      }
+    }
+    END { if (!found) exit 1 }'
+}
+
+# The character each symbol types (libxkbcommon via Python), for layouts the
+# overlay's own table does not cover. Optional: without it, labels fall back.
+symbol_chars() {
+  [[ -x /usr/bin/python3 ]] || return 0
+  /usr/bin/python3 -c '
+import ctypes, sys
+try:
+    x = ctypes.CDLL("libxkbcommon.so.0")
+except OSError:
+    sys.exit(0)
+x.xkb_keysym_from_name.restype = ctypes.c_uint32
+x.xkb_keysym_from_name.argtypes = [ctypes.c_char_p, ctypes.c_int]
+x.xkb_keysym_to_utf8.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t]
+for sym in sorted(set(sys.stdin.read().split())):
+    keysym = x.xkb_keysym_from_name(sym.encode(), 0)
+    buf = ctypes.create_string_buffer(8)
+    if keysym and x.xkb_keysym_to_utf8(keysym, buf, 8) > 0:
+        text = buf.value.decode("utf-8", "replace")
+        if text.isprintable() and not text.isspace():
+            print("char\t%s\t%s" % (sym, text))
+' 2>/dev/null
+}
+
+keys() {
+  set -o pipefail
+  local tool
+  for tool in hyprctl jq xkbcli; do
+    command -v "$tool" >/dev/null || fail "$tool is not installed"
+  done
+  awk --version 2>/dev/null | grep -q '^GNU Awk' || fail "GNU awk (gawk) is required"
+
+  local devices
+  devices=$(hyprctl devices -j 2>/dev/null) || fail "hyprctl could not list the keyboards"
+  local fields
+  fields=$(jq -r '
+    (.keyboards | map(select(.main)) | first // .keyboards[0] // {}) as $k
+    | [$k.layout, $k.variant, $k.options, $k.rules, $k.model, ($k.active_layout_index // 0)]
+    | map(tostring | if . == "null" or . == "" then "-" else . end) | @tsv' <<<"$devices") || fail "could not read the keyboard settings from hyprctl"
+  IFS=$'\t' read -r layouts variants options rules model index <<<"$fields"
+  # "-" stands for empty: read would merge adjacent empty tab-separated fields.
+  [[ $layouts == - || -z $layouts ]] && layouts=us
+  [[ $variants == - ]] && variants=""
+  [[ $options == - ]] && options=""
+  [[ $rules == - ]] && rules=""
+  [[ $model == - ]] && model=""
+  [[ $index =~ ^[0-9]+$ ]] || index=0
+
+  kb_file=$(hyprctl getoption input:kb_file -j 2>/dev/null | jq -r 'if .set then .str else "" end' 2>/dev/null)
+  [[ $kb_file == "[[EMPTY]]" ]] && kb_file=""
+  local by_sym
+  by_sym=$(hyprctl getoption input:resolve_binds_by_sym -j 2>/dev/null | jq -r '.bool // .int // false' 2>/dev/null)
+
+  IFS=, read -ra layout_list <<<"$layouts"
+  IFS=, read -ra variant_list <<<"$variants"
+  local active=${layout_list[$index]:-${layout_list[0]}} active_variant=${variant_list[$index]:-}
+  local first=${layout_list[0]} first_variant=${variant_list[0]:-}
+
+  local out
+  local active_group=1
+  [[ -n $kb_file ]] && active_group=$((index + 1))
+  out=$(compile_layout "" "$active" "$active_variant" "$active_group") || fail "xkbcli could not compile the $active keyboard layout"
+  printf 'layout\t%s\n' "$active"
+  printf '%s\n' "$out"
+  cut -f2,3 <<<"$(grep -v '^\(code\|alias\)'$'\t' <<<"$out")" | tr '\t' '\n' | symbol_chars
+
+  # Bindings are matched against the first layout unless resolve_binds_by_sym.
+  if [[ $by_sym != true && $by_sym != 1 && ( $first != "$active" || $first_variant != "$active_variant" || $active_group != 1 ) ]]; then
+    compile_layout res "$first" "$first_variant" 1 || fail "xkbcli could not compile the $first keyboard layout"
+  fi
+
+  # Bindings made on a physical key (code:NN) rather than a symbol, from the
+  # Omarchy menu's Lua bind cache: "bind<TAB>modmask<TAB>keycode<TAB>description".
+  if $menu_loaded; then
+    build_lua_bind_cache
+    local entry key
+    for entry in "${!LUA_BIND_KEY_MAP[@]}"; do
+      key=${LUA_BIND_KEY_MAP[$entry]}
+      [[ $key == code:* ]] && printf 'bind\t%s\t%s\t%s\n' "${entry%%,*}" "${key#code:}" "${entry#*,}"
+    done
+  fi
+
+  # Bindings Hyprland keeps active in every submap still run while the key
+  # map is open.
+  # "?" when that cannot be checked: never reported as none.
+  local universal
+  universal=$(hyprctl binds -j 2>/dev/null | jq '[.[] | select(.submap_universal == true or .submap_universal == "true")] | length' 2>/dev/null) || universal="?"
+  [[ $universal =~ ^[0-9]+$ ]] || universal="?"
+  printf 'universal\t%s\n' "$universal"
+}
+
+# --- One-click setup ---------------------------------------------------------
+# Setup writes one marked block and removal deletes exactly that block (all
+# three lines, in order, unchanged). No other line of the file is interpreted
+# or touched. Whether it is loaded is asked of Hyprland itself, so a line
+# added by hand counts as set up too (and is left for the user to remove).
+block_begin="-- >>> io.github.erikrjohansson.extended-keybindings-viewer: added by Extended Keybindings Viewer's Set up (remove with extended-keybindings-viewer unsetup)"
+block_end="-- <<< io.github.erikrjohansson.extended-keybindings-viewer"
+
+# The block as exact text. Compared with plain string matching (no awk or
+# regex escapes), so any plugin path matches itself.
+block_text="$block_begin"$'\n'"$setup_line"$'\n'"$block_end"$'\n'
+
+# The file's bytes, trailing newlines included.
+file_text() {
+  local text
+  text=$(cat -- "$bindings_file"; printf x) || return 1
+  printf '%s' "${text%x}"
+}
+
+has_block() {
+  [[ -f $bindings_file ]] || return 1
+  local text
+  text=$(file_text; printf x) || return 1
+  text=${text%x}
+  [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]]
+}
+
+# "true" when Hyprland has the overlay's submap binding loaded, else "false".
+loaded_in_hyprland() {
+  local binds
+  binds=$(hyprctl binds -j 2>/dev/null) || fail "could not check Hyprland's bindings"
+  jq 'any(.[]; .submap == "io.github.erikrjohansson.extended-keybindings-viewer")' <<<"$binds" 2>/dev/null || fail "could not check Hyprland's bindings"
+}
+
+reload_and_check() {
+  local want=$1 errors
+  hyprctl reload >/dev/null 2>&1 || fail "hyprctl reload failed"
+  sleep 0.3
+  errors=$(hyprctl configerrors 2>/dev/null) || fail "could not ask Hyprland for config errors"
+  errors=$(grep -v '^[[:space:]]*$' <<<"$errors")
+  [[ -n $errors ]] && fail "Hyprland reports a config error: $(head -n1 <<<"$errors")"
+  local loaded
+  loaded=$(loaded_in_hyprland) || exit 1   # its error is already on stderr
+  [[ $loaded == "$want" ]] || return 1
+}
+
+status() {
+  local loaded
+  loaded=$(loaded_in_hyprland) || exit 1
+  if [[ $loaded == true ]] || has_block; then echo setup; else echo not-setup; fi
+}
+
+setup() {
+  local loaded
+  loaded=$(loaded_in_hyprland) || exit 1
+  if [[ $loaded == true ]]; then echo setup; return; fi
+  if ! has_block; then
+    mkdir -p "$(dirname "$bindings_file")" || fail "could not create $(dirname "$bindings_file")"
+    {
+      [[ -s $bindings_file && $(tail -c1 "$bindings_file") != "" ]] && echo
+      echo "$block_begin"
+      echo "$setup_line"
+      echo "$block_end"
+    } >>"$bindings_file" || fail "could not write $bindings_file"
+  fi
+  reload_and_check true || fail "Hyprland did not load Extended Keybindings Viewer after the reload"
+  echo setup
+}
+
+unsetup() {
+  # Leave the key map first: once its bindings.lua is gone, a reload drops
+  # the submap's escape binding while it might still be active.
+  omarchy-shell shell hide io.github.erikrjohansson.extended-keybindings-viewer >/dev/null 2>&1
+  [[ $(hyprctl submap 2>/dev/null) == io.github.erikrjohansson.extended-keybindings-viewer ]] && hyprctl dispatch 'hl.dsp.submap("reset")' >/dev/null 2>&1
+
+  if has_block; then
+    # Drop the first exact copy of the block (at the start of the file or of
+    # a line); every other byte stays as it is.
+    local text
+    text=$(file_text; printf x) || fail "could not read $bindings_file"
+    text=${text%x}
+    if [[ $text == "$block_text"* ]]; then
+      text=${text#"$block_text"}
+    else
+      text=${text/$'\n'"$block_text"/$'\n'}
+    fi
+    printf '%s' "$text" >"$bindings_file" || fail "could not write $bindings_file"
+  fi
+  if ! reload_and_check false; then
+    fail "Extended Keybindings Viewer is still loaded by a line not added by Set up (in $bindings_file or a file it loads); remove that line by hand"
+  fi
+  echo not-setup
+}
+
+case "${1:-records}" in
+  records) records ;;
+  keys) keys ;;
+  setup) setup ;;
+  unsetup) unsetup ;;
+  status) status ;;
+  *) fail "usage: extended-keybindings-viewer [records|keys|setup|unsetup|status]" ;;
+esac

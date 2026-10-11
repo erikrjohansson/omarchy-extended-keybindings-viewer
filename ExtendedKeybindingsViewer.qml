@@ -266,7 +266,7 @@ Item {
         for (var i = 0; i < screens.length; ++i)
             if (monitor && screens[i].name === monitor.name) targetScreen = screens[i]
         baseMods = []
-        heldMods = []
+        clearHeld()
         query = ""
         lookup = { key: "", mods: [] }
         typing = false
@@ -314,6 +314,10 @@ Item {
         settingsFile.reload()
     }
 
+    // A toggle made while the previous one was being written: saved once
+    // that write has fully ended (a reload asked for during it is ignored).
+    function saveAgain() { if (saveWanted) settingsFile.reload() }
+
     // The settings as read: an object, or null when the file is not one (it
     // is then left alone).
     function applySettings(parsed) {
@@ -332,7 +336,7 @@ Item {
     // Closed, nothing is left running: the instance stays loaded all session.
     function close() {
         opened = false
-        heldMods = []
+        clearHeld()
         clearPin()
         pinnedButton = ""
         restoring = false
@@ -381,6 +385,10 @@ Item {
     // release event cannot leave a modifier stuck. The flags may or may not
     // include the modifier key being pressed or released, so that key is
     // applied on top.
+    // Modifier keys held down, by keycode: releasing one Shift while the
+    // other is still down keeps SHIFT held.
+    property var modKeysDown: ({})
+
     function syncMods(event, down) {
         var flags = event.modifiers
         var next = []
@@ -390,15 +398,25 @@ Item {
         if (flags & Qt.AltModifier) next.push("ALT")
         var mod = modForEvent(event)
         if (mod) {
+            if (down) modKeysDown[event.nativeScanCode] = mod
+            else delete modKeysDown[event.nativeScanCode]
+            var stillDown = false
+            for (var code in modKeysDown) if (modKeysDown[code] === mod) stillDown = true
             next = next.filter(function(m) { return m !== mod })
-            if (down) next.push(mod)
+            if (down || stillDown) next.push(mod)
         }
         if (next.slice().sort().join() !== heldMods.slice().sort().join()) heldMods = next
     }
 
+    function clearHeld() {
+        modKeysDown = {}
+        heldMods = []
+    }
+
+    // Modifiers clicked on the drawn keyboard count as held for every lookup.
     function pin(mods, name) {
         if (!guarded) return
-        var sorted = modOrder.filter(function(m) { return mods.indexOf(m) !== -1 })
+        var sorted = modOrder.filter(function(m) { return mods.indexOf(m) !== -1 || baseMods.indexOf(m) !== -1 })
         // Key repeat presses the same shortcut again: nothing changes.
         if (lookup.key === name && lookup.mods.join("+") === sorted.join("+")) return
         hoverIndex = -1
@@ -449,9 +467,16 @@ Item {
         return true
     }
 
+    // Only the button that started a lookup ends it (another button may
+    // have been pressed and released meanwhile).
     function releaseButton(mouse) {
+        if (buttonIds[mouse.button] !== pinnedButton) return
+        cancelButton()
+    }
+
+    function cancelButton() {
         leftHold.stop()
-        if (pinnedButton && buttonIds[mouse.button] === pinnedButton && pinnedKey === pinnedButton) clearPin()
+        if (pinnedButton && pinnedKey === pinnedButton) clearPin()
         pinnedButton = ""
     }
 
@@ -802,7 +827,7 @@ Item {
         onLoadFailed: function(error) { root.applySettings(error === FileViewError.FileNotFound ? {} : null) }
         onSaveFailed: root.failed("Could not save the fullscreen setting", "")
         // A toggle made while writing (its reload was skipped) is saved now.
-        onSaved: if (root.saveWanted) reload()
+        onSaved: Qt.callLater(root.saveAgain)
     }
 
     Process {
@@ -993,7 +1018,7 @@ Item {
                         if (!event.isAutoRepeat && root.pinned && root.layout.codes[event.nativeScanCode] === root.pinnedKey)
                             root.clearPin()
                     }
-                    onActiveFocusChanged: if (!activeFocus && !root.typing) root.heldMods = []
+                    onActiveFocusChanged: if (!activeFocus && !root.typing) root.clearHeld()
                 }
 
                 Item {
@@ -1365,6 +1390,7 @@ Item {
             acceptedButtons: Qt.AllButtons
             onPressed: function(mouse) { mouse.accepted = root.pressButton(mouse) }
             onReleased: function(mouse) { root.releaseButton(mouse) }
+            onCanceled: root.cancelButton()
             onWheel: function(wheel) { wheel.accepted = root.scrollLookup(wheel) }
         }
     }

@@ -199,17 +199,31 @@ block_end="-- <<< io.github.erikrjohansson.extended-keybindings-viewer"
 # regex escapes), so any plugin path matches itself.
 block_text="$block_begin"$'\n'"$setup_line"$'\n'"$block_end"$'\n'
 
-# The file's bytes, trailing newlines included.
+# The file's bytes, trailing newlines included; fails when it cannot be read.
 file_text() {
   local text
-  text=$(cat -- "$bindings_file"; printf x) || return 1
+  text=$(cat -- "$bindings_file" && printf x) || return 1
   printf '%s' "${text%x}"
+}
+
+# Replaces the file's contents in one step: written to a temporary file next
+# to it (the real file when it is a symlink), with its permissions, then moved
+# over it, so a failure never leaves it empty or half written.
+write_bindings() {
+  local target tmp
+  target=$(readlink -f -- "$bindings_file") || return 1
+  tmp=$(mktemp -- "$(dirname -- "$target")/.bindings.lua.XXXXXX") || return 1
+  if printf '%s' "$1" >"$tmp" && chmod --reference="$target" -- "$tmp" && mv -f -- "$tmp" "$target"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
 }
 
 has_block() {
   [[ -f $bindings_file ]] || return 1
   local text
-  text=$(file_text; printf x) || return 1
+  text=$(file_text && printf x) || return 1
   text=${text%x}
   [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]]
 }
@@ -266,14 +280,14 @@ unsetup() {
     # Drop the first exact copy of the block (at the start of the file or of
     # a line); every other byte stays as it is.
     local text
-    text=$(file_text; printf x) || fail "could not read $bindings_file"
+    text=$(file_text && printf x) || fail "could not read $bindings_file"
     text=${text%x}
     if [[ $text == "$block_text"* ]]; then
       text=${text#"$block_text"}
     else
       text=${text/$'\n'"$block_text"/$'\n'}
     fi
-    printf '%s' "$text" >"$bindings_file" || fail "could not write $bindings_file"
+    write_bindings "$text" || fail "could not write $bindings_file"
   fi
   if ! reload_and_check false; then
     fail "Extended Keybindings Viewer is still loaded by a line not added by Set up (in $bindings_file or a file it loads); remove that line by hand"

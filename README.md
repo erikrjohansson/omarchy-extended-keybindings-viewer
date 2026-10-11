@@ -16,8 +16,8 @@ Needs one manual step after installing to take over SUPER + K (see
   shows what it does, a single key or modifier (A, SUPER, SHIFT + A…) lists
   every binding that uses it. Its keys light up while you hold them.
 - **Click or scroll** with modifiers to look up mouse bindings.
-- **Ctrl+Tab** moves between keyboard, search and list; **Ctrl+F** searches;
-  **Esc** closes.
+- **Ctrl+Tab** moves between keyboard, search and list; **Ctrl+F** searches
+  (again to leave the search); **Esc** closes.
 - It opens as a card over your desktop; **Ctrl+Shift+F** or the button in its
   top right corner switches to fullscreen and back, and the choice is
   remembered.

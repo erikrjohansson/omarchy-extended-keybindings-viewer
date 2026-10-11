@@ -599,7 +599,7 @@ Item {
         if (isBound(heldMods, layout.codes[event.nativeScanCode] || "")) return false
         if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && mods === "CTRL+SHIFT")) previousPlace()
         else if (event.key === Qt.Key_Tab) nextPlace()
-        else if (event.key === Qt.Key_F && mods === "CTRL") startSearch()
+        else if (event.key === Qt.Key_F && mods === "CTRL") { if (typing) stopSearch(); else startSearch() }   // Ctrl+F again leaves, like Esc
         else if (event.key === Qt.Key_F && mods === "CTRL+SHIFT") { if (!event.isAutoRepeat) toggleFullscreen() }
         else return false
         return true
@@ -1170,9 +1170,33 @@ Item {
                         Text {
                             visible: !search.text
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Search   ·   Ctrl+F"
+                            text: "Search"
                             font: search.font
                             color: Util.alpha(root.fg, 0.65)
+                        }
+                    }
+
+                    // Its shortcut as a small key, until typing starts.
+                    Rectangle {
+                        visible: !root.typing && !search.text
+                        anchors.right: parent.right
+                        anchors.rightMargin: Math.round(root.unit * 0.15)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: shortcutText.implicitWidth + Style.space(14)
+                        height: shortcutText.implicitHeight + Style.space(6)
+                        radius: Math.max(3, root.radius * 0.6)
+                        color: Util.alpha(root.fg, 0.04)
+                        border.width: 1
+                        border.color: Util.alpha(root.fg, 0.22)
+
+                        Text {
+                            id: shortcutText
+                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: "Ctrl+F"
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.body
+                            color: Util.alpha(root.fg, 0.55)
                         }
                     }
                 }
@@ -1182,7 +1206,7 @@ Item {
                 Column {
                     id: messages
                     anchors.top: searchBox.bottom
-                    anchors.topMargin: root.unit * 0.3
+                    anchors.topMargin: root.unit * 0.6
                     width: parent.width
                     spacing: Style.space(8)
 
@@ -1202,28 +1226,32 @@ Item {
                         width: parent.width
                         height: notice.visible ? notice.height : hint.height
 
+                        // A header for the list: what it shows and how many, at the
+                        // list's left edge; how to narrow it only on the full list.
                         Text {
                             id: hint
-                            anchors.horizontalCenter: parent.horizontalCenter
+                            x: root.listOffset
                             visible: !notice.visible
-                            // The short wording when the full one does not fit: one
-                            // line either way, so the list never moves.
-                            readonly property var texts: !root.loaded ? ["reading keybindings…", ""]
-                                : root.typing ? ["type to search   ·   ctrl+tab to move between keyboard, search and list   ·   esc back to the keyboard",
-                                                 "type to search   ·   ctrl+tab next place   ·   esc back"]
-                                : root.inList ? ["←↑↓→ to browse   ·   ctrl+tab to move between keyboard, search and list   ·   esc " + (root.searching ? "back to the search" : "back to the keyboard"),
-                                                 "←↑↓→ to browse   ·   ctrl+tab next place   ·   esc back"]
-                                : root.pinned && !root.pinnedExact && root.lines.length
-                                  ? ["No exact binding for " + root.pinnedCombo + "   ·   matches with more modifiers:", "No exact " + root.pinnedCombo + "   ·   with more modifiers:"]
-                                : ["hold any key or combination to see its keybindings   ·   ctrl+tab to move between keyboard, search and list   ·   ctrl+shift+f fullscreen   ·   esc closes",
-                                   "hold any key or combination to see its keybindings   ·   ctrl+tab next place   ·   ctrl+shift+f fullscreen   ·   esc closes"]
-                            width: Math.min(implicitWidth, parent.width)
+                            readonly property int count: root.lines.length
+                            readonly property string what: !root.loaded ? "Reading keybindings…"
+                                : count === 0 ? ""
+                                : root.pinned ? (root.pinnedExact
+                                    ? root.pinnedCombo + (count > 1 ? "   ·   and " + (count - 1) + " with more modifiers" : "")
+                                    : "No exact binding for " + root.pinnedCombo + "   ·   " + count + " with more modifiers")
+                                : root.searching ? count + (count === 1 ? " result" : " results") + " for “" + root.query + "”"
+                                : root.modFilter ? count + (count === 1 ? " keybinding uses " : " keybindings use ") + root.activeMods.join(" + ")
+                                : count + " keybindings"
+                            readonly property string how: root.typing ? "type to search, esc back"
+                                : root.inList ? "←↑↓→ to browse, esc back"
+                                : !root.pinned && !root.searching && !root.modFilter && root.loaded ? "hold any key to filter" : ""
+                            readonly property var texts: [what + (what && how ? "   ·   " + how : how), what || how]
+                            width: Math.min(implicitWidth, parent.width - x)
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
-                            text: texts[1] && hintMeasure.advanceWidth > parent.width ? texts[1] : texts[0]
+                            text: texts[1] && hintMeasure.advanceWidth > parent.width - x ? texts[1] : texts[0]
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.body
-                            color: Util.alpha(root.fg, 0.72)
+                            color: Util.alpha(root.fg, 0.6)
                         }
 
                         // Without the submap, pressing a shortcut here would run it: lookups
@@ -1299,7 +1327,7 @@ Item {
                         if (root.baseView && !root.restoring) root.baseY = flick.contentY
                     })
                     anchors.top: messages.bottom
-                    anchors.topMargin: root.unit * 0.73
+                    anchors.topMargin: root.unit * 0.4
                     anchors.bottom: parent.bottom
                     // Wider than the page by the row padding, so a selected row's
                     // highlight can reach past text aligned with the page edges.

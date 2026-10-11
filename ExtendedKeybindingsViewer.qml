@@ -152,7 +152,7 @@ Item {
         if (i >= all.length) return null
         var per = perColumnFor(all.length)
         var y = (i % per) * lineHeight
-        return { line: all[i], x: Math.floor(i / per) * (columnWidth + gutter), y: y,
+        return { line: all[i], x: Math.floor(i / per) * columnStep, y: y,
                  near: y + lineHeight > top - lineHeight * 4 && y < top + height + lineHeight * 4 }
     }
     // Rows the list keeps, enough for the full list (or any longer view).
@@ -187,13 +187,12 @@ Item {
     readonly property var allLines: Model.list(bindings, null, "")
     readonly property int longestCombo: {
         var n = 10
-        for (var i = 0; i < bindings.length; ++i) n = Math.max(n, bindings[i].combo.length)
         for (var j = 0; j < allLines.length; ++j) n = Math.max(n, allLines[j].combo.length)
         return Math.min(n, 30)
     }
     readonly property int longestText: {
         var n = 20
-        for (var i = 0; i < bindings.length; ++i) n = Math.max(n, bindings[i].desc.length)
+        for (var j = 0; j < allLines.length; ++j) n = Math.max(n, allLines[j].text.length)
         return Math.min(n, 40)
     }
     readonly property real charWidth: Math.max(1, metrics.averageCharacterWidth)
@@ -213,8 +212,11 @@ Item {
     readonly property real cardPad: Math.min(Style.space(36), panel.width * 0.025)
     readonly property real cardBorder: Math.max(1, Style.space(2))
     readonly property real cardInset: cardPad + cardBorder
+    // Windowed: a landscape card on large screens (70 % of the height), most
+    // of the height on small ones (never under 600 px when the screen allows).
     readonly property real frameMaxHeight: fullscreen ? panel.height
-        : panel.height - 2 * Math.max(Style.space(24), panel.height * 0.07)
+        : Math.min(panel.height - 2 * Math.max(Style.space(24), panel.height * 0.07),
+                   Math.max(600, panel.height * 0.7))
     readonly property real heightUnit: frameMaxHeight * 0.29 / 6.25
     readonly property real keyboardWidth: heightUnit * keyboard.units
     readonly property real maxContent: fullscreen ? panel.width - Style.space(64)
@@ -227,15 +229,18 @@ Item {
     readonly property int gridColumns: Math.max(alignedColumns, Math.min(2, columnsIn(maxContent, columnNeed * 0.8)))
     readonly property real contentWidth: fullscreen
         ? Math.min(maxContent, Math.max(panel.width * 0.5, columnsWidth(gridColumns)))
-        : gridColumns === alignedColumns ? Math.min(keyboardWidth, maxContent)
         : Math.min(maxContent, columnsWidth(gridColumns))
     readonly property real lineHeight: Math.round(Style.font.title * 2.1)
     // Sized for the full list, so the card does not change size while filtering.
     readonly property int fullColumns: Math.max(1, Math.min(gridColumns, Math.ceil(allLines.length / 6)))
     readonly property real cardHeight: Math.min(frameMaxHeight,
         flick.y + Math.ceil(allLines.length / fullColumns) * lineHeight + 2 * cardInset)
-    readonly property real columnWidth: gridColumns > 1 ? (contentWidth - (gridColumns - 1) * gutter) / gridColumns
-                                                        : Math.min(contentWidth, columnNeed)
+    // A column is as wide as its text needs (less when that does not fit);
+    // spare width goes between the columns, so the first starts at the
+    // page's left edge and the last ends at its right edge.
+    readonly property real columnWidth: Math.min(columnNeed, gridColumns > 1
+        ? (contentWidth - (gridColumns - 1) * gutter) / gridColumns : contentWidth)
+    readonly property real columnStep: gridColumns > 1 ? (contentWidth - columnWidth) / (gridColumns - 1) : 0
     // A single column of results sits in the middle, under the search box.
     readonly property real listOffset: cols.length === 1 ? (contentWidth - columnWidth) / 2 : 0
     // Bindings Hyprland keeps active in every submap still run while the key
@@ -633,7 +638,7 @@ Item {
         var rowY = flick.y + (i % perColumn) * lineHeight - flick.contentY
         if (rowY + lineHeight / 2 < flick.y || rowY + lineHeight / 2 > flick.y + flick.height) return null
         return { combo: activeLine.combo, text: activeLine.text,
-                 x: flick.x + list.x + Math.floor(i / perColumn) * (columnWidth + gutter),
+                 x: flick.x + list.x + Math.floor(i / perColumn) * columnStep,
                  y: rowY + lineHeight + Style.space(4), above: rowY - Style.space(4) }
     }
 
@@ -1049,8 +1054,10 @@ Item {
                     id: searchBox
                     anchors.top: keyboard.bottom
                     anchors.topMargin: root.unit * 0.8
-                    x: root.gridColumns === 3 ? root.columnWidth + root.gutter : (parent.width - width) / 2
-                    width: root.gridColumns === 3 ? root.columnWidth : Math.min(parent.width, root.unit * 9)
+                    // One list column wide, centred: a single column of results
+                    // sits right under it, and with three columns it is the middle one.
+                    x: (parent.width - width) / 2
+                    width: root.columnWidth
                     height: Math.round(root.unit * 0.8)
                     radius: root.radius
                     color: Util.alpha(root.fg, 0.04)
@@ -1245,7 +1252,7 @@ Item {
                     Item {
                         id: list
                         x: root.rowPad + root.listOffset
-                        width: root.cols.length * (root.columnWidth + root.gutter) - root.gutter
+                        width: (root.cols.length - 1) * root.columnStep + root.columnWidth
                         height: root.lines.length ? root.perColumn * root.lineHeight : 0
 
                         // One fixed set of rows, reused by every view: building
@@ -1255,7 +1262,7 @@ Item {
                         // Omarchy's menu: one, moved to the active row.
                         Ui.BorderSurface {
                             visible: root.activeIndex >= 0
-                            x: Math.floor(root.activeIndex / root.perColumn) * (root.columnWidth + root.gutter) - root.rowPad
+                            x: Math.floor(root.activeIndex / root.perColumn) * root.columnStep - root.rowPad
                             y: (root.activeIndex % root.perColumn) * root.lineHeight
                             width: root.columnWidth + 2 * root.rowPad
                             height: root.lineHeight

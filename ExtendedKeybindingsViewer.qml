@@ -119,6 +119,8 @@ Item {
     readonly property int columnCount: Math.max(1, Math.min(gridColumns, Math.ceil(lines.length / 6)))
     readonly property var cols: Model.columns(lines, columnCount)
     readonly property int perColumn: cols.length ? cols[0].length : 1
+    // Rows the list keeps, enough for the full list (or any longer view).
+    readonly property int slotCount: Math.max(allLines.length, lines.length)
     readonly property var cursorLine: cursor >= 0 && cursor < lines.length ? lines[cursor] : null
     readonly property var keyLine: lineForKey(hoverKey)
     // Repeater delegates get copies of the line objects, so lines are
@@ -1083,25 +1085,18 @@ Item {
                     contentHeight: list.height
                     boundsBehavior: Flickable.StopAtBounds
 
-                    Row {
+                    Item {
                         id: list
                         x: root.rowPad + root.listOffset
-                        spacing: root.gutter
+                        width: root.cols.length * (root.columnWidth + root.gutter) - root.gutter
+                        height: root.lines.length ? root.perColumn * root.lineHeight : 0
 
+                        // One fixed set of rows, reused by every view: building
+                        // the rows anew on each key press took ~100 ms, so fast
+                        // typing fell behind.
                         Repeater {
-                            model: root.cols
-
-                            delegate: Column {
-                                id: col
-                                required property var modelData
-                                required property int index
-                                width: root.columnWidth
-
-                                Repeater {
-                                    model: col.modelData
-                                    delegate: Line { column: col.index }
-                                }
-                            }
+                            model: root.slotCount
+                            delegate: Line {}
                         }
                     }
                 }
@@ -1197,13 +1192,19 @@ Item {
         }
     }
 
+    // A row slot: shows lines[index], placed by column, hidden when the
+    // current view is shorter.
     component Line: Item {
         id: line
-        required property var modelData
         required property int index
-        property int column: 0
-        readonly property int at: column * root.perColumn + index
-        readonly property bool active: root.activeIndex === at
+        readonly property int at: index
+        readonly property bool shown: at < root.lines.length
+        readonly property var modelData: shown ? root.lines[at] : null
+        readonly property int column: Math.floor(at / root.perColumn)
+        readonly property bool active: shown && root.activeIndex === at
+        visible: shown
+        x: column * (root.columnWidth + root.gutter)
+        y: (at % root.perColumn) * root.lineHeight
         width: root.columnWidth
         height: root.lineHeight
 
@@ -1230,7 +1231,7 @@ Item {
             width: root.comboWidth
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
-            text: line.modelData.combo
+            text: line.modelData ? line.modelData.combo : ""
             elide: Text.ElideRight
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
@@ -1244,7 +1245,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
-            text: line.modelData.text
+            text: line.modelData ? line.modelData.text : ""
             elide: Text.ElideRight
             font.family: root.fontFamily
             font.pixelSize: Style.font.title

@@ -200,6 +200,8 @@ Item {
     readonly property real gutter: Style.space(28)
     readonly property real rowPad: Style.space(10)
     readonly property real comboWidth: charWidth * (longestCombo + 2)
+    // In a row: at most 60 % of the column, so a description always has room.
+    readonly property real rowComboWidth: Math.min(comboWidth, columnWidth * 0.6)
     // As many columns as fit (up to three), so narrow screens and large fonts
     // still leave every description room.
     readonly property real columnNeed: comboWidth + charWidth * (longestText + 1)
@@ -267,6 +269,9 @@ Item {
         cursor = -1
         hoverIndex = -1
         hoverKey = ""
+        // Kept loaded between openings, but each opening starts at the top.
+        baseY = 0
+        flick.contentY = 0
         opened = true
         disarmPointer()
         loadError = ""
@@ -274,6 +279,7 @@ Item {
         layoutDone = false
         guarded = false
         guardChecked = false
+        guardSerial++
         showAnyway = false
         if (!ready) showTimer.restart()
         read()
@@ -329,6 +335,7 @@ Item {
         wheelRelease.stop()
         showTimer.stop()
         guardCheck.stop()
+        guardAgain = false
     }
 
     function dismiss() {
@@ -569,6 +576,8 @@ Item {
     // Left / right in the list: the same row in the neighbouring column.
     function moveColumn(step) {
         if (cursor < 0) { move(1); return }
+        hoverIndex = -1
+        hoverKey = ""
         var column = Math.floor(cursor / perColumn) + step
         if (column < 0 || column >= cols.length) return
         cursor = column * perColumn + Math.min(cursor % perColumn, cols[column].length - 1)
@@ -599,11 +608,12 @@ Item {
     }
     onCursorChanged: Qt.callLater(ensureCursorVisible)
     onPerColumnChanged: Qt.callLater(ensureCursorVisible)
+    onLineHeightChanged: Qt.callLater(ensureCursorVisible)
 
     // Scrolls the list so the keyboard-selected row shows, a row clear of the
     // faded edges.
     function ensureCursorVisible() {
-        if (cursor < 0 || cursor >= lines.length) return
+        if (!opened || cursor < 0 || cursor >= lines.length) return
         var y = (cursor % perColumn) * lineHeight
         var margin = Math.min(lineHeight, Math.max(0, (flick.height - lineHeight) / 2))
         var maxY = Math.max(0, flick.contentHeight - flick.height)
@@ -619,7 +629,7 @@ Item {
     readonly property var tip: {
         var i = activeIndex
         if (!opened || i < 0 || !activeLine) return null
-        if (comboMeasure.advanceWidth <= comboWidth && descMeasure.advanceWidth <= columnWidth - comboWidth) return null
+        if (comboMeasure.advanceWidth <= rowComboWidth && descMeasure.advanceWidth <= columnWidth - rowComboWidth) return null
         var rowY = flick.y + (i % perColumn) * lineHeight - flick.contentY
         if (rowY + lineHeight / 2 < flick.y || rowY + lineHeight / 2 > flick.y + flick.height) return null
         return { combo: activeLine.combo, text: activeLine.text,
@@ -702,14 +712,26 @@ Item {
 
     // Is Hyprland in the key map's submap? Asked once the layer has opened,
     // then followed live through Hyprland's submap events.
-    Timer { id: guardCheck; interval: 350; onTriggered: if (!submapProc.running) submapProc.running = true }
+    Timer { id: guardCheck; interval: 350; onTriggered: root.askGuard() }
+
+    // Bumped at each opening and each submap event: an answer counts only if
+    // nothing newer has happened since it was asked.
+    property int guardSerial: 0
+    property int guardAsked: -1
+    property bool guardAgain: false
+    function askGuard() {
+        if (submapProc.running) { guardAgain = true; return }
+        guardAsked = guardSerial
+        submapProc.running = true
+    }
 
     Process {
         id: submapProc
         command: ["hyprctl", "submap"]
         stdout: StdioCollector { id: submapOut; waitForEnd: true }
         onExited: function(code) {
-            if (!root.opened) return   // an answer from an earlier opening
+            if (root.guardAgain) { root.guardAgain = false; root.askGuard(); return }
+            if (!root.opened || root.guardAsked !== root.guardSerial) return   // overtaken
             root.guarded = code === 0 && submapOut.text.trim() === root.submapName
             root.guardChecked = true
         }
@@ -720,6 +742,7 @@ Item {
         target: root.opened ? Hyprland : null
         function onRawEvent(event) {
             if (event.name !== "submap") return
+            root.guardSerial++
             root.guarded = String(event.data).trim() === root.submapName
             root.guardChecked = true
             if (!root.guarded) root.clearPin()
@@ -773,6 +796,8 @@ Item {
         // Created on the first toggle only when there is no file yet.
         onLoadFailed: function(error) { root.applySettings(error === FileViewError.FileNotFound ? {} : null) }
         onSaveFailed: root.failed("Could not save the fullscreen setting", "")
+        // A toggle made while writing (its reload was skipped) is saved now.
+        onSaved: if (root.saveWanted) reload()
     }
 
     Process {
@@ -1202,6 +1227,7 @@ Item {
                     id: flick
                     // Saved once the change has settled: while a lookup starts, the
                     // derived `baseView` can still read true for a moment.
+                    onHeightChanged: Qt.callLater(root.ensureCursorVisible)
                     onContentYChanged: Qt.callLater(function() {
                         if (root.baseView && !root.restoring) root.baseY = flick.contentY
                     })
@@ -1354,7 +1380,7 @@ Item {
 
         Text {
             id: comboText
-            width: root.comboWidth
+            width: root.rowComboWidth
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: line.near ? line.row.line.combo : ""

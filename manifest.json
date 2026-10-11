@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.erikrjohansson.extended-keybindings-viewer",
   "name": "Extended Keybindings Viewer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "erikrjohansson",
   "license": "MIT",
   "description": "SUPER + K with your keyboard and mouse on screen: press a shortcut to see what it does, hold modifiers to filter, search every binding.",

@@ -167,6 +167,9 @@ Item {
     function controlAt(x, y) {
         var item = childAt(x, y)
         if (!item) return false
+        // The empty corner left of ISO Enter's lower half.
+        if (item.modelData && item.modelData.shape === "iso-enter")
+            return !(x - item.x < unit * 0.25 && y - item.y > unit - item.gap)
         if (item !== mouse) return true
         var part = mouse.childAt(x - mouse.x, y - mouse.y)
         return !!part && !!part.partId
@@ -220,7 +223,6 @@ Item {
             color: keyboard.partFill(partId, false)
             border.width: keyboard.lit.indexOf(partId) !== -1 ? 1.5 : 1
             border.color: keyboard.partEdge(partId, false)
-            Behavior on color { ColorAnimation { duration: 90 } }
 
             Text {
                 anchors.centerIn: parent
@@ -391,39 +393,41 @@ Item {
                 color: cap.fill
                 border.width: cap.edgeWidth
                 border.color: cap.edge
-                Behavior on color { ColorAnimation { duration: 90 } }
-            }
+                }
 
             // ISO Enter: wide on the upper row, a quarter key narrower below.
-            Shape {
-                id: isoEnter
-                visible: cap.modelData.shape === "iso-enter"
+            // Built for that key only.
+            Loader {
                 anchors.fill: parent
-                // The default (geometry) renderer: the curve renderer drew this
-                // shape's outline but not its fill.
-                preferredRendererType: Shape.GeometryRenderer
-                antialiasing: true
-                readonly property real r: cap.radius
-                readonly property real step: keyboard.unit * 0.25
-                readonly property real mid: keyboard.unit - cap.gap
-
-                ShapePath {
-                    fillColor: cap.fill
-                    fillRule: ShapePath.WindingFill
-                    strokeColor: cap.edge
-                    strokeWidth: cap.edgeWidth
-                    startX: isoEnter.r; startY: 0
-                    PathLine { x: cap.width - isoEnter.r; y: 0 }
-                    PathArc { x: cap.width; y: isoEnter.r; radiusX: isoEnter.r; radiusY: isoEnter.r }
-                    PathLine { x: cap.width; y: cap.height - isoEnter.r }
-                    PathArc { x: cap.width - isoEnter.r; y: cap.height; radiusX: isoEnter.r; radiusY: isoEnter.r }
-                    PathLine { x: isoEnter.step + isoEnter.r; y: cap.height }
-                    PathArc { x: isoEnter.step; y: cap.height - isoEnter.r; radiusX: isoEnter.r; radiusY: isoEnter.r }
-                    PathLine { x: isoEnter.step; y: isoEnter.mid }
-                    PathLine { x: isoEnter.r; y: isoEnter.mid }
-                    PathArc { x: 0; y: isoEnter.mid - isoEnter.r; radiusX: isoEnter.r; radiusY: isoEnter.r }
-                    PathLine { x: 0; y: isoEnter.r }
-                    PathArc { x: isoEnter.r; y: 0; radiusX: isoEnter.r; radiusY: isoEnter.r }
+                active: cap.modelData.shape === "iso-enter"
+                sourceComponent: Shape {
+                    id: isoEnter
+                    // The default (geometry) renderer: the curve renderer drew this
+                    // shape's outline but not its fill.
+                    preferredRendererType: Shape.GeometryRenderer
+                    antialiasing: true
+                    readonly property real r: cap.radius
+                    readonly property real step: keyboard.unit * 0.25
+                    readonly property real mid: keyboard.unit - cap.gap
+    
+                    ShapePath {
+                        fillColor: cap.fill
+                        fillRule: ShapePath.WindingFill
+                        strokeColor: cap.edge
+                        strokeWidth: cap.edgeWidth
+                        startX: isoEnter.r; startY: 0
+                        PathLine { x: cap.width - isoEnter.r; y: 0 }
+                        PathArc { x: cap.width; y: isoEnter.r; radiusX: isoEnter.r; radiusY: isoEnter.r }
+                        PathLine { x: cap.width; y: cap.height - isoEnter.r }
+                        PathArc { x: cap.width - isoEnter.r; y: cap.height; radiusX: isoEnter.r; radiusY: isoEnter.r }
+                        PathLine { x: isoEnter.step + isoEnter.r; y: cap.height }
+                        PathArc { x: isoEnter.step; y: cap.height - isoEnter.r; radiusX: isoEnter.r; radiusY: isoEnter.r }
+                        PathLine { x: isoEnter.step; y: isoEnter.mid }
+                        PathLine { x: isoEnter.r; y: isoEnter.mid }
+                        PathArc { x: 0; y: isoEnter.mid - isoEnter.r; radiusX: isoEnter.r; radiusY: isoEnter.r }
+                        PathLine { x: 0; y: isoEnter.r }
+                        PathArc { x: isoEnter.r; y: 0; radiusX: isoEnter.r; radiusY: isoEnter.r }
+                    }
                 }
             }
 

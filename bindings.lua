@@ -5,6 +5,12 @@ local viewer_id = "io.github.erikrjohansson.extended-keybindings-viewer"
 local viewer_layer = "omarchy-extended-keybindings-viewer"
 local viewer_submap = "io.github.erikrjohansson.extended-keybindings-viewer"
 
+-- Opens at once like Omarchy's own menus, without the compositor's layer fade.
+-- (Checked: tools that read this config may give a stand-in `hl` without it.)
+if type(hl.layer_rule) == "function" then
+  hl.layer_rule({ match = { namespace = "^" .. viewer_layer .. "$" }, no_anim = true, animation = "none" })
+end
+
 hl.unbind("SUPER + K")
 o.bind("SUPER + K", "Keybindings", "omarchy-shell shell toggle " .. viewer_id)
 

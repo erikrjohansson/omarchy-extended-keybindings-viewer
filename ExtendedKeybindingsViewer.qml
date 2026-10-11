@@ -39,8 +39,9 @@ Item {
     // A card over the desktop like Omarchy's menus, or the whole screen; the
     // choice is kept in the same settings file.
     property bool fullscreen: false
-    property var settings: ({})
-    property bool settingsWritable: false
+    // A toggle waiting to be saved, and the text to save.
+    property bool saveWanted: false
+    property string settingsOut: ""
     // The page is shown once the bindings and the layout have been read (they
     // are read ahead when the shell starts and kept between openings), so the
     // keyboard never opens half drawn and then jumps into place.
@@ -61,8 +62,11 @@ Item {
     property var heldMods: []
     property string query: ""
     // The full shortcut being pressed (modifiers + key), until its key is released.
-    property string pinnedKey: ""
-    property var pinnedMods: []
+    // The shortcut being pressed, set in one assignment so that a press or a
+    // release changes the list once: { key, mods }.
+    property var lookup: ({ key: "", mods: [] })
+    readonly property string pinnedKey: lookup.key
+    readonly property var pinnedMods: lookup.mods
     property bool typing: false
     // Keyboard focus is in one of three places: the keyboard (every key is a
     // lookup), the search box (`typing`), or the list (`inList`, arrows move).
@@ -101,8 +105,24 @@ Item {
     })
     readonly property bool searching: query.length > 0
     readonly property bool modFilter: activeMods.length > 0
-    readonly property var lines: pinned ? Model.list(bindings, pinnedMods, "", pinnedKey)
-                                        : Model.list(bindings, modFilter ? activeMods : null, query)
+    // Read straight from the inputs (not from the derived properties above,
+    // which update one after another) and reused while the view is the same:
+    // every new list updates every row.
+    readonly property var lines: viewLines(bindings, lookup, baseMods, filterHeld, query)
+    property var linesMemo: ({ bindings: null, key: "", lines: [] })
+    function viewLines(all, look, base, held, text) {
+        var mods = look.key ? look.mods : modOrder.filter(function(m) {
+            return base.indexOf(m) !== -1 || held.indexOf(m) !== -1
+        })
+        var key = (look.key ? "key " + look.key : "text " + text) + " mods " + mods.join("+")
+        var memo = linesMemo
+        if (memo.bindings !== all || memo.key !== key) {
+            memo.bindings = all
+            memo.key = key
+            memo.lines = look.key ? Model.list(all, mods, "", look.key) : Model.list(all, mods.length ? mods : null, text)
+        }
+        return memo.lines
+    }
     // Whether the pressed combination itself is bound (it is then listed first).
     readonly property bool pinnedExact: pinned && lines.length > 0 && lines[0].mods.join("+") === pinnedMods.join("+")
     readonly property string pinnedCombo: pinned
@@ -119,6 +139,22 @@ Item {
     readonly property int columnCount: Math.max(1, Math.min(gridColumns, Math.ceil(lines.length / 6)))
     readonly property var cols: Model.columns(lines, columnCount)
     readonly property int perColumn: cols.length ? cols[0].length : 1
+    function perColumnFor(count) {
+        return count ? Math.ceil(count / Math.max(1, Math.min(gridColumns, Math.ceil(count / 6)))) : 1
+    }
+
+    // Everything one list row slot shows, from the inputs in one go: the row
+    // then changes once per view, never with half-updated parts (a row
+    // briefly at its old place counted as near the view and laid out its
+    // text for nothing). Text is laid out only in and near the visible part
+    // of the list: doing it for every row on each key press was most of the cost.
+    function rowAt(i, all, top, height) {
+        if (i >= all.length) return null
+        var per = perColumnFor(all.length)
+        var y = (i % per) * lineHeight
+        return { line: all[i], x: Math.floor(i / per) * (columnWidth + gutter), y: y,
+                 near: y + lineHeight > top - lineHeight * 4 && y < top + height + lineHeight * 4 }
+    }
     // Rows the list keeps, enough for the full list (or any longer view).
     readonly property int slotCount: Math.max(allLines.length, lines.length)
     readonly property var cursorLine: cursor >= 0 && cursor < lines.length ? lines[cursor] : null
@@ -167,26 +203,39 @@ Item {
     // As many columns as fit (up to three), so narrow screens and large fonts
     // still leave every description room.
     readonly property real columnNeed: comboWidth + charWidth * (longestText + 1)
-    // Windowed, the page is a card no taller than frameMaxHeight and no wider
-    // than the keyboard at the size that height allows, so the keyboard keeps
-    // the page's edges.
-    readonly property real cardPad: Style.space(36)
+    // Windowed, the page is a card no taller than frameMaxHeight. It is as
+    // wide as the keyboard at the size that height allows, so the keyboard
+    // keeps the page's edges, unless that leaves room for only one list
+    // column: then it widens for two (narrowed a little if need be, cut-off
+    // rows showing their full text), with the keyboard centred.
+    readonly property real cardPad: Math.min(Style.space(36), panel.width * 0.025)
     readonly property real cardBorder: Math.max(1, Style.space(2))
-    readonly property real frameMaxHeight: fullscreen ? panel.height : panel.height * 0.86
+    readonly property real cardInset: cardPad + cardBorder
+    readonly property real frameMaxHeight: fullscreen ? panel.height
+        : panel.height - 2 * Math.max(Style.space(24), panel.height * 0.07)
     readonly property real heightUnit: frameMaxHeight * 0.29 / 6.25
-    readonly property real available: fullscreen ? panel.width - Style.space(64)
-        : Math.min(panel.width * 0.8 - 2 * (cardPad + cardBorder), heightUnit * keyboard.units)
-    readonly property int gridColumns: Math.max(1, Math.min(3, Math.floor((available + gutter) / (columnNeed + gutter))))
-    readonly property real contentWidth: !fullscreen ? available : Math.min(available,
-        Math.max(panel.width * 0.5, gridColumns * columnNeed + (gridColumns - 1) * gutter))
+    readonly property real keyboardWidth: heightUnit * keyboard.units
+    readonly property real maxContent: fullscreen ? panel.width - Style.space(64)
+        : Math.min(panel.width * 0.8, panel.width - 2 * Style.space(48)) - 2 * cardInset
+    function columnsIn(width, need) {
+        return Math.max(1, Math.min(3, Math.floor((width + gutter) / (need + gutter))))
+    }
+    function columnsWidth(n) { return n * columnNeed + (n - 1) * gutter }
+    readonly property int alignedColumns: columnsIn(fullscreen ? maxContent : Math.min(keyboardWidth, maxContent), columnNeed)
+    readonly property int gridColumns: Math.max(alignedColumns, Math.min(2, columnsIn(maxContent, columnNeed * 0.8)))
+    readonly property real contentWidth: fullscreen
+        ? Math.min(maxContent, Math.max(panel.width * 0.5, columnsWidth(gridColumns)))
+        : gridColumns === alignedColumns ? Math.min(keyboardWidth, maxContent)
+        : Math.min(maxContent, columnsWidth(gridColumns))
     readonly property real lineHeight: Math.round(Style.font.title * 2.1)
     // Sized for the full list, so the card does not change size while filtering.
+    readonly property int fullColumns: Math.max(1, Math.min(gridColumns, Math.ceil(allLines.length / 6)))
     readonly property real cardHeight: Math.min(frameMaxHeight,
-        flick.y + Math.ceil(allLines.length / gridColumns) * lineHeight + 2 * (cardPad + cardBorder))
-    readonly property real columnWidth: (contentWidth - (gridColumns - 1) * gutter) / gridColumns
-    // A single column of results sits under the search box (the middle column).
+        flick.y + Math.ceil(allLines.length / fullColumns) * lineHeight + 2 * cardInset)
+    readonly property real columnWidth: gridColumns > 1 ? (contentWidth - (gridColumns - 1) * gutter) / gridColumns
+                                                        : Math.min(contentWidth, columnNeed)
     // A single column of results sits in the middle, under the search box.
-    readonly property real listOffset: cols.length === 1 && gridColumns > 1 ? (contentWidth - columnWidth) / 2 : 0
+    readonly property real listOffset: cols.length === 1 ? (contentWidth - columnWidth) / 2 : 0
     // Bindings Hyprland keeps active in every submap still run while the key
     // map is open; "?" when that could not be checked.
     // Unknown ("?") at every opening until this opening's layout read says;
@@ -212,7 +261,7 @@ Item {
         baseMods = []
         heldMods = []
         query = ""
-        pinnedKey = ""
+        lookup = { key: "", mods: [] }
         typing = false
         inList = false
         cursor = -1
@@ -225,11 +274,9 @@ Item {
         layoutDone = false
         guarded = false
         guardChecked = false
-        tip = null
         showAnyway = false
         if (!ready) showTimer.restart()
         read()
-        guardCheck.restart()
         if (!statusProc.running) statusProc.running = true
         testFlag.reload()
         Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -248,19 +295,40 @@ Item {
     // A slow read still opens the page soon, saying it is reading.
     Timer { id: showTimer; interval: 600; onTriggered: root.showAnyway = true }
 
+    // Saved into the file as it is now (read again first), so other settings
+    // and edits made meanwhile are kept.
     function toggleFullscreen() {
         fullscreen = !fullscreen
-        var next = {}
-        for (var k in settings) next[k] = settings[k]
-        next.fullscreen = fullscreen
-        settings = next
-        // A settings file that could not be parsed is left alone.
-        if (settingsWritable && !settingsDir.running) settingsDir.running = true
+        saveWanted = true
+        settingsFile.reload()
     }
 
+    // The settings as read: an object, or null when the file is not one (it
+    // is then left alone).
+    function applySettings(parsed) {
+        shapeSetting = String((parsed || {}).shape || "").toLowerCase()
+        if (!saveWanted) {
+            fullscreen = !!parsed && parsed.fullscreen === true
+            return
+        }
+        saveWanted = false
+        if (!parsed) return
+        parsed.fullscreen = fullscreen
+        settingsOut = JSON.stringify(parsed, null, 2) + "\n"
+        if (!settingsDir.running) settingsDir.running = true
+    }
+
+    // Closed, nothing is left running: the instance stays loaded all session.
     function close() {
         opened = false
         heldMods = []
+        clearPin()
+        pinnedButton = ""
+        restoring = false
+        leftHold.stop()
+        wheelRelease.stop()
+        showTimer.stop()
+        guardCheck.stop()
     }
 
     function dismiss() {
@@ -318,10 +386,12 @@ Item {
 
     function pin(mods, name) {
         if (!guarded) return
+        var sorted = modOrder.filter(function(m) { return mods.indexOf(m) !== -1 })
+        // Key repeat presses the same shortcut again: nothing changes.
+        if (lookup.key === name && lookup.mods.join("+") === sorted.join("+")) return
         hoverIndex = -1
         hoverKey = ""
-        pinnedMods = modOrder.filter(function(m) { return mods.indexOf(m) !== -1 })
-        pinnedKey = name
+        lookup = { key: name, mods: sorted }
     }
 
     // A click or scroll to look up: Super + click, a right or middle click, or
@@ -383,17 +453,18 @@ Item {
     // back where it was scrolled to.
     readonly property bool baseView: !pinned && !modFilter && !searching
     property real baseY: 0
-    // The list grows back over a few frames; keep restoring until it settles.
+    // Restored once the change has settled (the rows are in place by then);
+    // not when another view has started meanwhile.
     property bool restoring: false
     function restoreScroll() {
+        restoring = false
+        if (!opened || !baseView) return
         flick.contentY = Math.max(0, Math.min(baseY, flick.contentHeight - flick.height))
     }
-    onBaseViewChanged: if (baseView) {
-        restoring = true
-        Qt.callLater(restoreScroll)
-        restoreEnd.restart()
+    onBaseViewChanged: {
+        restoring = baseView
+        if (baseView) Qt.callLater(restoreScroll)
     }
-    Timer { id: restoreEnd; interval: 200; onTriggered: { root.restoreScroll(); root.restoring = false } }
 
     function scrollLookup(wheel) {
         var mods = modsOf(wheel.modifiers)
@@ -425,8 +496,7 @@ Item {
     }
 
     function clearPin() {
-        pinnedKey = ""
-        pinnedMods = []
+        if (lookup.key) lookup = { key: "", mods: [] }
     }
 
     function startSearch() {
@@ -477,9 +547,9 @@ Item {
     // combination. Returns true when handled.
     function navigate(event) {
         var mods = heldMods.slice().sort().join("+")
-        var name = layout.codes[event.nativeScanCode] || ""
         if (mods !== "CTRL" && mods !== "CTRL+SHIFT") return false
-        if (isBound(heldMods, name)) return false
+        if (event.key !== Qt.Key_Tab && event.key !== Qt.Key_Backtab && event.key !== Qt.Key_F) return false
+        if (isBound(heldMods, layout.codes[event.nativeScanCode] || "")) return false
         if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && mods === "CTRL+SHIFT")) previousPlace()
         else if (event.key === Qt.Key_Tab) nextPlace()
         else if (event.key === Qt.Key_F && mods === "CTRL") startSearch()
@@ -518,18 +588,59 @@ Item {
         if (line) cursor = lines.indexOf(line)
     }
 
+    // Reads the inputs directly: derived properties may not have caught up yet.
     onLinesChanged: {
         disarmPointer()
-        tip = null
-        var exact = pinned && lines.length > 0 && lines[0].mods.join("+") === pinnedMods.join("+")
-        cursor = (searching || inList || exact) && lines.length ? 0 : -1
+        var exact = lookup.key !== "" && lines.length > 0 && lines[0].mods.join("+") === lookup.mods.join("+")
+        cursor = (query.length > 0 || inList || exact) && lines.length ? 0 : -1
         hoverIndex = -1
         if (!lines.length && !heldMods.length) inList = false
+        Qt.callLater(ensureCursorVisible)
+    }
+    onCursorChanged: Qt.callLater(ensureCursorVisible)
+    onPerColumnChanged: Qt.callLater(ensureCursorVisible)
+
+    // Scrolls the list so the keyboard-selected row shows, a row clear of the
+    // faded edges.
+    function ensureCursorVisible() {
+        if (cursor < 0 || cursor >= lines.length) return
+        var y = (cursor % perColumn) * lineHeight
+        var margin = Math.min(lineHeight, Math.max(0, (flick.height - lineHeight) / 2))
+        var maxY = Math.max(0, flick.contentHeight - flick.height)
+        if (y - margin < flick.contentY) flick.contentY = Math.max(0, y - margin)
+        else if (y + lineHeight + margin > flick.contentY + flick.height)
+            flick.contentY = Math.min(maxY, y + lineHeight + margin - flick.height)
     }
     onQueryChanged: { hoverKey = ""; hoverIndex = -1 }
 
-    // Full text of the active row when it is cut off: { combo, text, x, y }.
-    property var tip: null
+    // Full text of the active row when it is cut off, in page coordinates:
+    // under the row, or above it (`above`) when there is no room below.
+    // Derived from the state, so it follows scrolling and reused rows.
+    readonly property var tip: {
+        var i = activeIndex
+        if (!opened || i < 0 || !activeLine) return null
+        if (comboMeasure.advanceWidth <= comboWidth && descMeasure.advanceWidth <= columnWidth - comboWidth) return null
+        var rowY = flick.y + (i % perColumn) * lineHeight - flick.contentY
+        if (rowY + lineHeight / 2 < flick.y || rowY + lineHeight / 2 > flick.y + flick.height) return null
+        return { combo: activeLine.combo, text: activeLine.text,
+                 x: flick.x + list.x + Math.floor(i / perColumn) * (columnWidth + gutter),
+                 y: rowY + lineHeight + Style.space(4), above: rowY - Style.space(4) }
+    }
+
+    TextMetrics {
+        id: comboMeasure
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.weight: Font.Medium
+        text: root.activeLine ? root.activeLine.combo : ""
+    }
+
+    TextMetrics {
+        id: descMeasure
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        text: root.activeLine ? root.activeLine.text : ""
+    }
 
 
     FontMetrics {
@@ -558,6 +669,7 @@ Item {
                 if (text !== root.recordsText) { root.recordsText = text; root.rawBindings = parsed }
             } else root.failed("Could not read the keybindings", recordsErr.text)
             root.loaded = true
+            if (!layoutProc.running) loadTimeout.stop()
         }
     }
 
@@ -575,6 +687,7 @@ Item {
             } else root.failed("Could not read the keyboard layout", layoutErr.text)
             root.layoutDone = true
             root.layoutRead = true
+            if (!records.running) loadTimeout.stop()
         }
     }
 
@@ -596,13 +709,15 @@ Item {
         command: ["hyprctl", "submap"]
         stdout: StdioCollector { id: submapOut; waitForEnd: true }
         onExited: function(code) {
+            if (!root.opened) return   // an answer from an earlier opening
             root.guarded = code === 0 && submapOut.text.trim() === root.submapName
             root.guardChecked = true
         }
     }
 
+    // Only while open: Hyprland sends raw events all the time.
     Connections {
-        target: Hyprland
+        target: root.opened ? Hyprland : null
         function onRawEvent(event) {
             if (event.name !== "submap") return
             root.guarded = String(event.data).trim() === root.submapName
@@ -651,32 +766,21 @@ Item {
         printErrors: false
         atomicWrites: true
         onLoaded: {
-            try {
-                var parsed = JSON.parse(text())
-                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
-                root.settings = parsed
-                root.settingsWritable = true
-            } catch (e) {
-                root.settings = {}
-                root.settingsWritable = false
-            }
-            root.shapeSetting = String(root.settings.shape || "").toLowerCase()
-            root.fullscreen = root.settings.fullscreen === true
+            var parsed = null
+            try { parsed = JSON.parse(text()) } catch (e) {}
+            root.applySettings(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null)
         }
-        onLoadFailed: function(error) {
-            root.settings = {}
-            // Created on the first toggle only when there is no file yet.
-            root.settingsWritable = error === FileViewError.FileNotFound
-            root.shapeSetting = ""
-            root.fullscreen = false
-        }
+        // Created on the first toggle only when there is no file yet.
+        onLoadFailed: function(error) { root.applySettings(error === FileViewError.FileNotFound ? {} : null) }
+        onSaveFailed: root.failed("Could not save the fullscreen setting", "")
     }
 
     Process {
         id: settingsDir
         command: ["mkdir", "-p", root.settingsDirPath]
         onExited: function(code) {
-            if (code === 0) settingsFile.setText(JSON.stringify(root.settings, null, 2) + "\n")
+            if (code === 0) settingsFile.setText(root.settingsOut)
+            else root.failed("Could not save the fullscreen setting", "")
         }
     }
 
@@ -737,7 +841,11 @@ Item {
         WlrLayershell.namespace: "omarchy-extended-keybindings-viewer"
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: root.opened ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
-        onVisibleChanged: if (visible && !root.typing) keyCatcher.forceActiveFocus()
+        // The submap is entered when the layer maps, so it is checked from then.
+        onVisibleChanged: if (visible) {
+            if (!root.typing) keyCatcher.forceActiveFocus()
+            guardCheck.restart()
+        }
 
         // Windowed, the desktop shows dimmed around the card, as with Omarchy's menus.
         Rectangle {
@@ -758,7 +866,7 @@ Item {
 
         Ui.BorderSurface {
             id: frame
-            readonly property real inset: root.fullscreen ? 0 : root.cardPad + root.cardBorder
+            readonly property real inset: root.fullscreen ? 0 : root.cardInset
             anchors.centerIn: parent
             width: root.fullscreen ? parent.width : root.contentWidth + 2 * inset
             height: root.fullscreen ? parent.height : root.cardHeight
@@ -1006,15 +1114,21 @@ Item {
                             id: hint
                             anchors.horizontalCenter: parent.horizontalCenter
                             visible: !notice.visible
+                            // The short wording when the full one does not fit: one
+                            // line either way, so the list never moves.
+                            readonly property var texts: !root.loaded ? ["reading keybindings…", ""]
+                                : root.typing ? ["type to search   ·   ctrl+tab to move between keyboard, search and list   ·   esc back to the keyboard",
+                                                 "type to search   ·   ctrl+tab next place   ·   esc back"]
+                                : root.inList ? ["←↑↓→ to browse   ·   ctrl+tab to move between keyboard, search and list   ·   esc " + (root.searching ? "back to the search" : "back to the keyboard"),
+                                                 "←↑↓→ to browse   ·   ctrl+tab next place   ·   esc back"]
+                                : root.pinned && !root.pinnedExact && root.lines.length
+                                  ? [root.pinnedCombo + " is not bound on its own   ·   bindings that use it:", root.pinnedCombo + " alone is not bound:"]
+                                : ["press a shortcut to see what it does   ·   hold modifiers to filter   ·   ctrl+tab to move between keyboard, search and list   ·   ctrl+shift+f fullscreen   ·   esc closes",
+                                   "press a shortcut   ·   hold modifiers to filter   ·   ctrl+tab next place   ·   ctrl+shift+f fullscreen   ·   esc closes"]
                             width: Math.min(implicitWidth, parent.width)
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
-                            text: !root.loaded ? "reading keybindings…"
-                                : root.typing ? "type to search   ·   ctrl+tab to move between keyboard, search and list   ·   esc back to the keyboard"
-                                : root.inList ? "←↑↓→ to browse   ·   ctrl+tab to move between keyboard, search and list   ·   esc " + (root.searching ? "back to the search" : "back to the keyboard")
-                                : root.pinned && !root.pinnedExact && root.lines.length
-                                  ? root.pinnedCombo + " is not bound on its own   ·   bindings that use it:"
-                                : "press a shortcut to see what it does   ·   hold modifiers to filter   ·   ctrl+tab to move between keyboard, search and list   ·   ctrl+shift+f fullscreen   ·   esc closes"
+                            text: texts[1] && hintMeasure.advanceWidth > parent.width ? texts[1] : texts[0]
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.body
                             color: Util.alpha(root.fg, 0.66)
@@ -1022,14 +1136,25 @@ Item {
 
                         // Without the submap, pressing a shortcut here would run it: lookups
                         // stay off and this explains why (and offers the one-click setup).
+                        TextMetrics {
+                            id: hintMeasure
+                            font: hint.font
+                            text: hint.texts[0]
+                        }
+
                         Row {
                             id: notice
                             anchors.horizontalCenter: parent.horizontalCenter
                             spacing: Style.space(16)
                             visible: root.guardChecked && !root.guarded && root.loaded
 
+                            // Wraps when the card is too narrow for one line.
                             Text {
+                                id: noticeText
                                 anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(noticeMeasure.advanceWidth + 1,
+                                                notice.parent.width - (setupButton.visible ? setupButton.width + notice.spacing : 0))
+                                wrapMode: Text.WordWrap
                                 textFormat: Text.PlainText
                                 text: root.setupState === "setup"
                                     ? "Shortcuts are not paused, so looking them up is off. Reload Hyprland to finish the setup."
@@ -1039,7 +1164,14 @@ Item {
                                 color: Util.alpha(root.fg, 0.75)
                             }
 
+                            TextMetrics {
+                                id: noticeMeasure
+                                font: noticeText.font
+                                text: noticeText.text
+                            }
+
                             Ui.Button {
+                                id: setupButton
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: root.setupState !== "setup"
                                 enabled: !root.settingUp
@@ -1073,7 +1205,6 @@ Item {
                     onContentYChanged: Qt.callLater(function() {
                         if (root.baseView && !root.restoring) root.baseY = flick.contentY
                     })
-                    onContentHeightChanged: if (root.restoring) root.restoreScroll()
                     anchors.top: messages.bottom
                     anchors.topMargin: root.unit * 0.73
                     anchors.bottom: parent.bottom
@@ -1094,6 +1225,19 @@ Item {
                         // One fixed set of rows, reused by every view: building
                         // the rows anew on each key press took ~100 ms, so fast
                         // typing fell behind.
+                        // The theme's selected-row look, border spec included, as in
+                        // Omarchy's menu: one, moved to the active row.
+                        Ui.BorderSurface {
+                            visible: root.activeIndex >= 0
+                            x: Math.floor(root.activeIndex / root.perColumn) * (root.columnWidth + root.gutter) - root.rowPad
+                            y: (root.activeIndex % root.perColumn) * root.lineHeight
+                            width: root.columnWidth + 2 * root.rowPad
+                            height: root.lineHeight
+                            radius: root.radius
+                            color: root.selectedFill
+                            borderSpec: Border.surfaceSpec("menu", "selected-border", root.selectedBorder, 0)
+                        }
+
                         Repeater {
                             model: root.slotCount
                             delegate: Line {}
@@ -1198,40 +1342,22 @@ Item {
         id: line
         required property int index
         readonly property int at: index
-        readonly property bool shown: at < root.lines.length
-        readonly property var modelData: shown ? root.lines[at] : null
-        readonly property int column: Math.floor(at / root.perColumn)
+        readonly property var row: root.rowAt(index, root.lines, flick.contentY, flick.height)
+        readonly property bool shown: row !== null
+        readonly property bool near: shown && row.near
         readonly property bool active: shown && root.activeIndex === at
         visible: shown
-        x: column * (root.columnWidth + root.gutter)
-        y: (at % root.perColumn) * root.lineHeight
+        x: shown ? row.x : 0
+        y: shown ? row.y : 0
         width: root.columnWidth
         height: root.lineHeight
-
-        onActiveChanged: {
-            if (!active || root.cursor !== at) return
-            var p = line.mapToItem(flick.contentItem, 0, 0)
-            if (p.y < flick.contentY) flick.contentY = p.y
-            else if (p.y + height > flick.contentY + flick.height) flick.contentY = p.y + height - flick.height
-        }
-
-        // The theme's selected-row look, border spec included, as in Omarchy's menu.
-        Ui.BorderSurface {
-            anchors.fill: parent
-            anchors.leftMargin: -root.rowPad
-            anchors.rightMargin: -root.rowPad
-            radius: root.radius
-            color: root.selectedFill
-            borderSpec: Border.surfaceSpec("menu", "selected-border", root.selectedBorder, 0)
-            visible: line.active
-        }
 
         Text {
             id: comboText
             width: root.comboWidth
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
-            text: line.modelData ? line.modelData.combo : ""
+            text: line.near ? line.row.line.combo : ""
             elide: Text.ElideRight
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
@@ -1245,21 +1371,11 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
-            text: line.modelData ? line.modelData.text : ""
+            text: line.near ? line.row.line.text : ""
             elide: Text.ElideRight
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
             color: line.active ? root.accent : Util.alpha(root.fg, 0.78)
-        }
-
-        readonly property bool cut: comboText.truncated || descText.truncated
-        readonly property bool showTip: active && cut
-        onShowTipChanged: {
-            if (showTip) {
-                var p = line.mapToItem(page, 0, height + Style.space(4))
-                var top = line.mapToItem(page, 0, -Style.space(4))
-                root.tip = { combo: modelData.combo, text: modelData.text, x: p.x, y: p.y, above: top.y, at: at }
-            } else if (root.tip && root.tip.at === at) root.tip = null
         }
 
         MouseArea {

@@ -17,6 +17,9 @@ Needs one manual step after installing to take over SUPER + K (see
 - **Click or scroll** with modifiers to look up mouse bindings.
 - **Ctrl+Tab** moves between keyboard, search and list; **Ctrl+F** searches;
   **Esc** closes.
+- It opens as a card over your desktop; **Ctrl+Shift+F** or the button in its
+  top right corner switches to fullscreen and back, and the choice is
+  remembered.
 
 The keys follow your keyboard layout (Å Ä Ö, й, α…) and the colours follow
 your theme.
@@ -79,7 +82,8 @@ all part of Omarchy. `python3` is optional (labels for non-Latin layouts).
 
 - The keyboard is drawn ISO or ANSI from the layout. To force one, create
   `~/.config/omarchy/extensions/extended-keybindings-viewer.json` containing
-  `{ "shape": "ansi" }`.
+  `{ "shape": "ansi" }`. The fullscreen button saves `"fullscreen"` in the
+  same file.
 - Shortcuts are matched against Hyprland's first layout, from the main
   keyboard, read each time the overlay opens.
 - Media keys and F13–F24 have no drawn key: they are listed and can be looked

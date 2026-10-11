@@ -36,6 +36,19 @@ Item {
     property bool settingUp: false
     property bool testHooks: false
     property string shapeSetting: ""      // "iso" / "ansi" from extensions/extended-keybindings-viewer.json
+    // A card over the desktop like Omarchy's menus, or the whole screen; the
+    // choice is kept in the same settings file.
+    property bool fullscreen: false
+    property var settings: ({})
+    property bool settingsWritable: false
+    // The page is shown once the bindings and the layout have been read (they
+    // are read ahead when the shell starts and kept between openings), so the
+    // keyboard never opens half drawn and then jumps into place.
+    property bool layoutRead: false
+    property bool showAnyway: false
+    readonly property bool ready: (loaded && layoutRead) || showAnyway
+    property string recordsText: ""
+    property string layoutText: ""
     // Each binding lit on the key that types it on the active layout.
     readonly property var bindings: Model.resolve(rawBindings, layout, keyboard.keyNames,
                                                   function(name) { return keyboard.labels(name)[0] })
@@ -152,10 +165,22 @@ Item {
     // As many columns as fit (up to three), so narrow screens and large fonts
     // still leave every description room.
     readonly property real columnNeed: comboWidth + charWidth * (longestText + 1)
-    readonly property real available: panel.width - Style.space(64)
+    // Windowed, the page is a card no taller than frameMaxHeight and no wider
+    // than the keyboard at the size that height allows, so the keyboard keeps
+    // the page's edges.
+    readonly property real cardPad: Style.space(36)
+    readonly property real cardBorder: Math.max(1, Style.space(2))
+    readonly property real frameMaxHeight: fullscreen ? panel.height : panel.height * 0.86
+    readonly property real heightUnit: frameMaxHeight * 0.29 / 6.25
+    readonly property real available: fullscreen ? panel.width - Style.space(64)
+        : Math.min(panel.width * 0.8 - 2 * (cardPad + cardBorder), heightUnit * keyboard.units)
     readonly property int gridColumns: Math.max(1, Math.min(3, Math.floor((available + gutter) / (columnNeed + gutter))))
-    readonly property real contentWidth: Math.min(available,
+    readonly property real contentWidth: !fullscreen ? available : Math.min(available,
         Math.max(panel.width * 0.5, gridColumns * columnNeed + (gridColumns - 1) * gutter))
+    readonly property real lineHeight: Math.round(Style.font.title * 2.1)
+    // Sized for the full list, so the card does not change size while filtering.
+    readonly property real cardHeight: Math.min(frameMaxHeight,
+        flick.y + Math.ceil(allLines.length / gridColumns) * lineHeight + 2 * (cardPad + cardBorder))
     readonly property real columnWidth: (contentWidth - (gridColumns - 1) * gutter) / gridColumns
     // A single column of results sits under the search box (the middle column).
     // A single column of results sits in the middle, under the search box.
@@ -169,7 +194,7 @@ Item {
     readonly property string universalWarning: universalCount === "?"
         ? "Could not check for shortcuts that stay active while this is open"
         : universalCount > 0 ? universalCount + (universalCount === 1 ? " shortcut stays" : " shortcuts stay") + " active while this is open (marked universal)" : ""
-    readonly property real unit: Math.max(16, Math.min(contentWidth / keyboard.units, panel.height * 0.29 / 6.25))
+    readonly property real unit: Math.max(16, Math.min(contentWidth / keyboard.units, heightUnit))
 
     function lineForKey(id) {
         if (!id) return null
@@ -199,14 +224,36 @@ Item {
         guarded = false
         guardChecked = false
         tip = null
+        showAnyway = false
+        if (!ready) showTimer.restart()
+        read()
+        guardCheck.restart()
+        if (!statusProc.running) statusProc.running = true
+        testFlag.reload()
+        Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    }
+
+    // Bindings, layout and settings; again at every opening, in case they changed.
+    function read() {
         if (!records.running) records.running = true
         if (!layoutProc.running) layoutProc.running = true
         loadTimeout.restart()
-        guardCheck.restart()
-        if (!statusProc.running) statusProc.running = true
         settingsFile.reload()
-        testFlag.reload()
-        Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    }
+
+    Component.onCompleted: read()
+
+    // A slow read still opens the page soon, saying it is reading.
+    Timer { id: showTimer; interval: 600; onTriggered: root.showAnyway = true }
+
+    function toggleFullscreen() {
+        fullscreen = !fullscreen
+        var next = {}
+        for (var k in settings) next[k] = settings[k]
+        next.fullscreen = fullscreen
+        settings = next
+        // A settings file that could not be parsed is left alone.
+        if (settingsWritable && !settingsDir.running) settingsDir.running = true
     }
 
     function close() {
@@ -291,10 +338,10 @@ Item {
     }
 
     // A plain left click on something usable (the search box, the list, the
-    // setup notice, a key or a part of the drawn mouse) is for the page;
-    // anywhere else it is a lookup like other buttons.
+    // setup notice, the fullscreen button, a key or a part of the drawn mouse) is
+    // for the page; anywhere else it is a lookup like other buttons.
     function onPageControl(mouse) {
-        var items = [searchBox, flick, keyboard, notice]
+        var items = [searchBox, flick, keyboard, notice, sizeButton]
         for (var i = 0; i < items.length; ++i) {
             if (!items[i].visible) continue
             var p = items[i].mapFromItem(null, mouse.x, mouse.y)
@@ -423,8 +470,9 @@ Item {
         else enterList()
     }
 
-    // The key map's own shortcuts (Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+F), unless a
-    // binding uses exactly that combination. Returns true when handled.
+    // The key map's own shortcuts (Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+F,
+    // Ctrl+Shift+F for fullscreen), unless a binding uses exactly that
+    // combination. Returns true when handled.
     function navigate(event) {
         var mods = heldMods.slice().sort().join("+")
         var name = layout.codes[event.nativeScanCode] || ""
@@ -433,6 +481,7 @@ Item {
         if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && mods === "CTRL+SHIFT")) previousPlace()
         else if (event.key === Qt.Key_Tab) nextPlace()
         else if (event.key === Qt.Key_F && mods === "CTRL") startSearch()
+        else if (event.key === Qt.Key_F && mods === "CTRL+SHIFT") { if (!event.isAutoRepeat) toggleFullscreen() }
         else return false
         return true
     }
@@ -499,9 +548,13 @@ Item {
         stdout: StdioCollector { id: recordsOut; waitForEnd: true }
         stderr: StdioCollector { id: recordsErr; waitForEnd: true }
         onExited: function(code) {
-            var parsed = Model.parse(recordsOut.text)
-            if (code === 0 && parsed.length) root.rawBindings = parsed
-            else root.failed("Could not read the keybindings", recordsErr.text)
+            var text = recordsOut.text
+            var parsed = Model.parse(text)
+            // Unchanged bindings are not handed on again, so the open page
+            // does not rebuild.
+            if (code === 0 && parsed.length) {
+                if (text !== root.recordsText) { root.recordsText = text; root.rawBindings = parsed }
+            } else root.failed("Could not read the keybindings", recordsErr.text)
             root.loaded = true
         }
     }
@@ -512,12 +565,14 @@ Item {
         stdout: StdioCollector { id: layoutOut; waitForEnd: true }
         stderr: StdioCollector { id: layoutErr; waitForEnd: true }
         onExited: function(code) {
-            root.layoutDone = true
-            var parsed = Model.parseLayout(layoutOut.text)
+            var text = layoutOut.text
+            var parsed = Model.parseLayout(text)
             if (code === 0 && parsed.layout && Object.keys(parsed.keys).length) {
-                root.layout = parsed
+                if (text !== root.layoutText) { root.layoutText = text; root.layout = parsed }
                 root.universalCount = parsed.universal
             } else root.failed("Could not read the keyboard layout", layoutErr.text)
+            root.layoutDone = true
+            root.layoutRead = true
         }
     }
 
@@ -526,7 +581,7 @@ Item {
         interval: 8000
         onTriggered: {
             if (records.running) { records.running = false; root.failed("Reading the keybindings timed out", "") }
-            if (layoutProc.running) { layoutProc.running = false; root.layoutDone = true; root.failed("Reading the keyboard layout timed out", "") }
+            if (layoutProc.running) { layoutProc.running = false; root.layoutDone = true; root.layoutRead = true; root.failed("Reading the keyboard layout timed out", "") }
         }
     }
 
@@ -583,17 +638,44 @@ Item {
         }
     }
 
-    // Optional: ~/.config/omarchy/extensions/extended-keybindings-viewer.json, {"shape": "iso" | "ansi"}
-    // for a keyboard whose shape the layout does not tell.
+    // Optional: ~/.config/omarchy/extensions/extended-keybindings-viewer.json,
+    // {"shape": "iso" | "ansi"} for a keyboard whose shape the layout does not
+    // tell, and {"fullscreen": true}, written by the fullscreen button.
+    readonly property string settingsDirPath: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omarchy/extensions"
+
     FileView {
         id: settingsFile
-        path: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omarchy/extensions/extended-keybindings-viewer.json"
+        path: root.settingsDirPath + "/extended-keybindings-viewer.json"
         printErrors: false
+        atomicWrites: true
         onLoaded: {
-            try { root.shapeSetting = String(JSON.parse(text()).shape || "").toLowerCase() }
-            catch (e) { root.shapeSetting = "" }
+            try {
+                var parsed = JSON.parse(text())
+                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
+                root.settings = parsed
+                root.settingsWritable = true
+            } catch (e) {
+                root.settings = {}
+                root.settingsWritable = false
+            }
+            root.shapeSetting = String(root.settings.shape || "").toLowerCase()
+            root.fullscreen = root.settings.fullscreen === true
         }
-        onLoadFailed: root.shapeSetting = ""
+        onLoadFailed: function(error) {
+            root.settings = {}
+            // Created on the first toggle only when there is no file yet.
+            root.settingsWritable = error === FileViewError.FileNotFound
+            root.shapeSetting = ""
+            root.fullscreen = false
+        }
+    }
+
+    Process {
+        id: settingsDir
+        command: ["mkdir", "-p", root.settingsDirPath]
+        onExited: function(code) {
+            if (code === 0) settingsFile.setText(JSON.stringify(root.settings, null, 2) + "\n")
+        }
     }
 
     // Test commands below work only while this file exists; it is checked on
@@ -646,17 +728,19 @@ Item {
     PanelWindow {
         id: panel
         screen: root.targetScreen
-        visible: root.opened
+        visible: root.opened && root.ready
         anchors { top: true; bottom: true; left: true; right: true }
         color: "transparent"
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.namespace: "omarchy-extended-keybindings-viewer"
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: root.opened ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+        onVisibleChanged: if (visible && !root.typing) keyCatcher.forceActiveFocus()
 
+        // Windowed, the desktop shows dimmed around the card, as with Omarchy's menus.
         Rectangle {
             anchors.fill: parent
-            color: Color.menu.background
+            color: root.fullscreen ? Color.menu.background : Color.menu.scrim
         }
 
         // Clicks never close the key map (Esc and SUPER + K do); outside the
@@ -670,388 +754,431 @@ Item {
             }
         }
 
-        Item {
-            id: page
-            width: root.contentWidth
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.topMargin: Math.max(Style.space(40), parent.height * 0.06)
-            anchors.bottomMargin: Style.space(32)
+        Ui.BorderSurface {
+            id: frame
+            readonly property real inset: root.fullscreen ? 0 : root.cardPad + root.cardBorder
+            anchors.centerIn: parent
+            width: root.fullscreen ? parent.width : root.contentWidth + 2 * inset
+            height: root.fullscreen ? parent.height : root.cardHeight
+            radius: root.fullscreen ? 0 : Style.cornerRadius
+            color: root.fullscreen ? "transparent" : Color.menu.background
+            borderSpec: root.fullscreen ? Border.none()
+                : Border.surfaceSpec("menu", "border", Color.menu.border, root.cardBorder)
 
-            // Clicks inside the page should not close it; they leave the search.
-            MouseArea {
-                anchors.fill: parent
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                onClicked: {
-                    if (root.typing) root.stopSearch()
-                    else if (root.inList) root.leaveList(false)
-                }
-            }
-
-            // Outside the search box every key press is a shortcut to look up:
-            // modifiers filter while held, a full combination shows while pressed.
-            Item {
-                id: keyCatcher
-                focus: true
-                Keys.onPressed: function(event) {
-                    root.syncMods(event, true)
-                    event.accepted = true
-                    if (root.modForEvent(event)) {
-                        if (!event.isAutoRepeat) root.clearPin()
-                        return
-                    }
-                    if (root.navigate(event)) return
-                    var plain = root.heldMods.length === 0
-                    var name = root.layout.codes[event.nativeScanCode] || ""
-                    if (root.inList && plain) {
-                        if (event.key === Qt.Key_Escape) { root.leaveList(true); return }
-                        if (event.key === Qt.Key_Down) { root.move(1); return }
-                        if (event.key === Qt.Key_Up) { root.move(-1); return }
-                        if (event.key === Qt.Key_Left) { root.moveColumn(-1); return }
-                        if (event.key === Qt.Key_Right) { root.moveColumn(1); return }
-                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) return
-                        root.leaveList(false)
-                    }
-                    if (plain && event.key === Qt.Key_Escape) {
-                        if (root.pinned) root.clearPin()
-                        else if (root.searching) root.query = ""
-                        else root.dismiss()
-                        return
-                    }
-                    if (name) root.pin(root.heldMods, name)
-                }
-                Keys.onReleased: function(event) {
-                    root.syncMods(event, false)
-                    event.accepted = true
-                    if (!event.isAutoRepeat && root.pinned && root.layout.codes[event.nativeScanCode] === root.pinnedKey)
-                        root.clearPin()
-                }
-                onActiveFocusChanged: if (!activeFocus && !root.typing) root.heldMods = []
-            }
-
-            Item {
-                id: header
-                width: parent.width
-                height: title.implicitHeight
-
-                Text {
-                    id: title
-                    text: "Keybindings"
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.displayLarge
-                    font.weight: Font.Medium
-                    color: root.fg
-                }
-
-                Text {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: root.modFilter || root.pinned
-                    textFormat: Text.PlainText
-                    text: root.pinned ? root.pinnedCombo : root.activeMods.join(" + ")
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.heading
-                    font.weight: Font.Medium
-                    color: root.accent
-                }
-            }
-
-            Keyboard {
-                id: keyboard
-                anchors.top: header.bottom
-                // The three gaps (title–keyboard, keyboard–search, hint–list)
-                // look equal; the margins differ by what each edge's own
-                // inset adds (key gaps, line spacing).
-                anchors.topMargin: root.unit * 0.77
-                anchors.horizontalCenter: parent.horizontalCenter
-                unit: root.unit
-                iso: root.iso
-                layoutKeys: root.layout.keys
-                chars: root.layout.chars
-                activeMods: root.shownMods
-                lit: root.lit
-                bound: root.boundKeys
-                hoverKey: root.hoverKey
-                fontFamily: root.fontFamily
-                fg: root.fg
-                accent: root.accent
-                base: Color.menu.background
-                pointerArmed: root.pointerArmed
-                onKeyHovered: function(id) { root.hoverKey = id }
-                onKeyClicked: function(id) { root.selectKey(id) }
-                onPartPressed: function(id) { root.pressPart(id) }
-                onPartReleased: function(id) { root.releasePart(id) }
-            }
-
+            // Fullscreen ↔ windowed, in the frame's top right corner.
             Rectangle {
-                id: searchBox
-                anchors.top: keyboard.bottom
-                anchors.topMargin: root.unit * 0.8
-                x: root.gridColumns === 3 ? root.columnWidth + root.gutter : (parent.width - width) / 2
-                width: root.gridColumns === 3 ? root.columnWidth : Math.min(parent.width, root.unit * 9)
-                height: Math.round(root.unit * 0.8)
+                id: sizeButton
+                readonly property real size: Math.round(Style.font.heading * 2.2)
+                readonly property real margin: root.fullscreen ? Style.space(24) : (frame.inset - size) / 2 + Style.space(4)
+                x: frame.width - size - Math.max(Style.space(8), margin)
+                y: Math.max(Style.space(8), margin)
+                z: 3
+                width: size
+                height: size
                 radius: root.radius
-                color: Util.alpha(root.fg, 0.04)
+                color: sizeArea.containsMouse ? Util.alpha(root.fg, 0.08) : "transparent"
                 border.width: 1
-                border.color: root.typing ? Util.alpha(root.accent, 0.8) : Util.alpha(root.fg, 0.22)
+                border.color: Util.alpha(root.fg, sizeArea.containsMouse ? 0.5 : 0)
+
+                Text {
+                    anchors.centerIn: parent
+                    text: root.fullscreen ? "󰊔" : "󰊓"
+                    font.pixelSize: Math.round(Style.font.heading * 1.3)
+                    color: Util.alpha(root.fg, sizeArea.containsMouse ? 0.92 : 0.66)
+                }
 
                 MouseArea {
+                    id: sizeArea
                     anchors.fill: parent
-                    cursorShape: Qt.IBeamCursor
-                    onClicked: root.startSearch()
-                }
-
-                Text {
-                    id: searchIcon
-                    anchors.left: parent.left
-                    anchors.leftMargin: root.unit * 0.3
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "󰍉"
-                    font.pixelSize: Style.font.heading
-                    color: root.typing ? root.accent : Util.alpha(root.fg, 0.55)
-                }
-
-                TextInput {
-                    id: search
-                    anchors.left: searchIcon.right
-                    anchors.leftMargin: root.unit * 0.2
-                    anchors.right: parent.right
-                    anchors.rightMargin: root.unit * 0.3
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.query
-                    color: root.fg
-                    selectionColor: Util.alpha(root.accent, 0.4)
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.title
-                    clip: true
-                    onTextEdited: root.query = text
-                    onActiveFocusChanged: root.typing = activeFocus
-                    Keys.onPressed: function(event) {
-                        root.syncMods(event, true)
-                        if (root.modForEvent(event)) return
-                        if (root.navigate(event)) {}
-                        else if (event.key === Qt.Key_Escape) root.stopSearch()
-                        else if (event.key === Qt.Key_Down) root.nextPlace()
-                        else if (event.key === Qt.Key_Up) {}
-                        else return
-                        event.accepted = true
-                    }
-                    Keys.onReleased: function(event) { root.syncMods(event, false) }
-
-                    Text {
-                        visible: !search.text
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Search   ·   Ctrl+F"
-                        font: search.font
-                        color: Util.alpha(root.fg, 0.6)
-                    }
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleFullscreen()
                 }
             }
 
-            // Messages under the search box: an error (always shown), the setup
-            // notice or the hint, and the universal-shortcut warning.
-            Column {
-                id: messages
-                anchors.top: searchBox.bottom
-                anchors.topMargin: root.unit * 0.3
-                width: parent.width
-                spacing: Style.space(8)
+            Item {
+                id: page
+                width: root.contentWidth
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.topMargin: root.fullscreen ? Math.max(Style.space(40), parent.height * 0.06) : frame.inset
+                anchors.bottomMargin: root.fullscreen ? Style.space(32) : frame.inset
 
-                Text {
-                    width: parent.width
-                    visible: root.loadError !== ""
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                    text: root.loadError
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    color: Color.urgent
+                // Clicks inside the page should not close it; they leave the search.
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: {
+                        if (root.typing) root.stopSearch()
+                        else if (root.inList) root.leaveList(false)
+                    }
+                }
+
+                // Outside the search box every key press is a shortcut to look up:
+                // modifiers filter while held, a full combination shows while pressed.
+                Item {
+                    id: keyCatcher
+                    focus: true
+                    Keys.onPressed: function(event) {
+                        root.syncMods(event, true)
+                        event.accepted = true
+                        if (root.modForEvent(event)) {
+                            if (!event.isAutoRepeat) root.clearPin()
+                            return
+                        }
+                        if (root.navigate(event)) return
+                        var plain = root.heldMods.length === 0
+                        var name = root.layout.codes[event.nativeScanCode] || ""
+                        if (root.inList && plain) {
+                            if (event.key === Qt.Key_Escape) { root.leaveList(true); return }
+                            if (event.key === Qt.Key_Down) { root.move(1); return }
+                            if (event.key === Qt.Key_Up) { root.move(-1); return }
+                            if (event.key === Qt.Key_Left) { root.moveColumn(-1); return }
+                            if (event.key === Qt.Key_Right) { root.moveColumn(1); return }
+                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) return
+                            root.leaveList(false)
+                        }
+                        if (plain && event.key === Qt.Key_Escape) {
+                            if (root.pinned) root.clearPin()
+                            else if (root.searching) root.query = ""
+                            else root.dismiss()
+                            return
+                        }
+                        if (name) root.pin(root.heldMods, name)
+                    }
+                    Keys.onReleased: function(event) {
+                        root.syncMods(event, false)
+                        event.accepted = true
+                        if (!event.isAutoRepeat && root.pinned && root.layout.codes[event.nativeScanCode] === root.pinnedKey)
+                            root.clearPin()
+                    }
+                    onActiveFocusChanged: if (!activeFocus && !root.typing) root.heldMods = []
                 }
 
                 Item {
+                    id: header
                     width: parent.width
-                    height: notice.visible ? notice.height : hint.height
+                    height: title.implicitHeight
 
                     Text {
-                        id: hint
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        visible: !notice.visible
-                        width: Math.min(implicitWidth, parent.width)
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
-                        text: !root.loaded ? "reading keybindings…"
-                            : root.typing ? "type to search   ·   ctrl+tab to move between keyboard, search and list   ·   esc back to the keyboard"
-                            : root.inList ? "←↑↓→ to browse   ·   ctrl+tab to move between keyboard, search and list   ·   esc " + (root.searching ? "back to the search" : "back to the keyboard")
-                            : root.pinned && !root.pinnedExact && root.lines.length
-                              ? root.pinnedCombo + " is not bound on its own   ·   bindings that use it:"
-                            : "press a shortcut to see what it does   ·   hold modifiers to filter   ·   ctrl+tab to move between keyboard, search and list   ·   esc closes"
+                        id: title
+                        text: "Keybindings"
                         font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                        color: Util.alpha(root.fg, 0.66)
+                        font.pixelSize: Style.font.displayLarge
+                        font.weight: Font.Medium
+                        color: root.fg
                     }
 
-                    // Without the submap, pressing a shortcut here would run it: lookups
-                    // stay off and this explains why (and offers the one-click setup).
-                    Row {
-                        id: notice
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: Style.space(16)
-                        visible: root.guardChecked && !root.guarded && root.loaded
+                    Text {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: root.modFilter || root.pinned
+                        textFormat: Text.PlainText
+                        text: root.pinned ? root.pinnedCombo : root.activeMods.join(" + ")
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.heading
+                        font.weight: Font.Medium
+                        color: root.accent
+                    }
+                }
+
+                Keyboard {
+                    id: keyboard
+                    anchors.top: header.bottom
+                    // The three gaps (title–keyboard, keyboard–search, hint–list)
+                    // look equal; the margins differ by what each edge's own
+                    // inset adds (key gaps, line spacing).
+                    anchors.topMargin: root.unit * 0.77
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    unit: root.unit
+                    iso: root.iso
+                    layoutKeys: root.layout.keys
+                    chars: root.layout.chars
+                    activeMods: root.shownMods
+                    lit: root.lit
+                    bound: root.boundKeys
+                    hoverKey: root.hoverKey
+                    fontFamily: root.fontFamily
+                    fg: root.fg
+                    accent: root.accent
+                    base: Color.menu.background
+                    pointerArmed: root.pointerArmed
+                    onKeyHovered: function(id) { root.hoverKey = id }
+                    onKeyClicked: function(id) { root.selectKey(id) }
+                    onPartPressed: function(id) { root.pressPart(id) }
+                    onPartReleased: function(id) { root.releasePart(id) }
+                }
+
+                Rectangle {
+                    id: searchBox
+                    anchors.top: keyboard.bottom
+                    anchors.topMargin: root.unit * 0.8
+                    x: root.gridColumns === 3 ? root.columnWidth + root.gutter : (parent.width - width) / 2
+                    width: root.gridColumns === 3 ? root.columnWidth : Math.min(parent.width, root.unit * 9)
+                    height: Math.round(root.unit * 0.8)
+                    radius: root.radius
+                    color: Util.alpha(root.fg, 0.04)
+                    border.width: 1
+                    border.color: root.typing ? Util.alpha(root.accent, 0.8) : Util.alpha(root.fg, 0.22)
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.IBeamCursor
+                        onClicked: root.startSearch()
+                    }
+
+                    Text {
+                        id: searchIcon
+                        anchors.left: parent.left
+                        anchors.leftMargin: root.unit * 0.3
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "󰍉"
+                        font.pixelSize: Style.font.heading
+                        color: root.typing ? root.accent : Util.alpha(root.fg, 0.55)
+                    }
+
+                    TextInput {
+                        id: search
+                        anchors.left: searchIcon.right
+                        anchors.leftMargin: root.unit * 0.2
+                        anchors.right: parent.right
+                        anchors.rightMargin: root.unit * 0.3
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.query
+                        color: root.fg
+                        selectionColor: Util.alpha(root.accent, 0.4)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.title
+                        clip: true
+                        onTextEdited: root.query = text
+                        onActiveFocusChanged: root.typing = activeFocus
+                        Keys.onPressed: function(event) {
+                            root.syncMods(event, true)
+                            if (root.modForEvent(event)) return
+                            if (root.navigate(event)) {}
+                            else if (event.key === Qt.Key_Escape) root.stopSearch()
+                            else if (event.key === Qt.Key_Down) root.nextPlace()
+                            else if (event.key === Qt.Key_Up) {}
+                            else return
+                            event.accepted = true
+                        }
+                        Keys.onReleased: function(event) { root.syncMods(event, false) }
 
                         Text {
+                            visible: !search.text
                             anchors.verticalCenter: parent.verticalCenter
+                            text: "Search   ·   Ctrl+F"
+                            font: search.font
+                            color: Util.alpha(root.fg, 0.6)
+                        }
+                    }
+                }
+
+                // Messages under the search box: an error (always shown), the setup
+                // notice or the hint, and the universal-shortcut warning.
+                Column {
+                    id: messages
+                    anchors.top: searchBox.bottom
+                    anchors.topMargin: root.unit * 0.3
+                    width: parent.width
+                    spacing: Style.space(8)
+
+                    Text {
+                        width: parent.width
+                        visible: root.loadError !== ""
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                        text: root.loadError
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        color: Color.urgent
+                    }
+
+                    Item {
+                        width: parent.width
+                        height: notice.visible ? notice.height : hint.height
+
+                        Text {
+                            id: hint
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            visible: !notice.visible
+                            width: Math.min(implicitWidth, parent.width)
+                            elide: Text.ElideRight
                             textFormat: Text.PlainText
-                            text: root.setupState === "setup"
-                                ? "Shortcuts are not paused, so looking them up is off. Reload Hyprland to finish the setup."
-                                : "Shortcuts are not paused, so looking them up is off. Set up SUPER + K to open Extended Keybindings Viewer:"
+                            text: !root.loaded ? "reading keybindings…"
+                                : root.typing ? "type to search   ·   ctrl+tab to move between keyboard, search and list   ·   esc back to the keyboard"
+                                : root.inList ? "←↑↓→ to browse   ·   ctrl+tab to move between keyboard, search and list   ·   esc " + (root.searching ? "back to the search" : "back to the keyboard")
+                                : root.pinned && !root.pinnedExact && root.lines.length
+                                  ? root.pinnedCombo + " is not bound on its own   ·   bindings that use it:"
+                                : "press a shortcut to see what it does   ·   hold modifiers to filter   ·   ctrl+tab to move between keyboard, search and list   ·   ctrl+shift+f fullscreen   ·   esc closes"
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.body
-                            color: Util.alpha(root.fg, 0.75)
+                            color: Util.alpha(root.fg, 0.66)
                         }
 
-                        Ui.Button {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: root.setupState !== "setup"
-                            enabled: !root.settingUp
-                            text: root.settingUp ? "Setting up…" : "Set up"
-                            onClicked: {
-                                root.settingUp = true
-                                root.loadError = ""
-                                setupProc.running = true
+                        // Without the submap, pressing a shortcut here would run it: lookups
+                        // stay off and this explains why (and offers the one-click setup).
+                        Row {
+                            id: notice
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: Style.space(16)
+                            visible: root.guardChecked && !root.guarded && root.loaded
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                textFormat: Text.PlainText
+                                text: root.setupState === "setup"
+                                    ? "Shortcuts are not paused, so looking them up is off. Reload Hyprland to finish the setup."
+                                    : "Shortcuts are not paused, so looking them up is off. Set up SUPER + K to open Extended Keybindings Viewer:"
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                color: Util.alpha(root.fg, 0.75)
+                            }
+
+                            Ui.Button {
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: root.setupState !== "setup"
+                                enabled: !root.settingUp
+                                text: root.settingUp ? "Setting up…" : "Set up"
+                                onClicked: {
+                                    root.settingUp = true
+                                    root.loadError = ""
+                                    setupProc.running = true
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        visible: root.universalWarning !== "" && root.guarded && root.layoutDone
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                        text: root.universalWarning
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        color: Color.urgent
+                    }
+                }
+
+                Flickable {
+                    id: flick
+                    // Saved once the change has settled: while a lookup starts, the
+                    // derived `baseView` can still read true for a moment.
+                    onContentYChanged: Qt.callLater(function() {
+                        if (root.baseView && !root.restoring) root.baseY = flick.contentY
+                    })
+                    onContentHeightChanged: if (root.restoring) root.restoreScroll()
+                    anchors.top: messages.bottom
+                    anchors.topMargin: root.unit * 0.73
+                    anchors.bottom: parent.bottom
+                    // Wider than the page by the row padding, so a selected row's
+                    // highlight can reach past text aligned with the page edges.
+                    x: -root.rowPad
+                    width: parent.width + 2 * root.rowPad
+                    clip: true
+                    contentHeight: list.height
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Row {
+                        id: list
+                        x: root.rowPad + root.listOffset
+                        spacing: root.gutter
+
+                        Repeater {
+                            model: root.cols
+
+                            delegate: Column {
+                                id: col
+                                required property var modelData
+                                required property int index
+                                width: root.columnWidth
+
+                                Repeater {
+                                    model: col.modelData
+                                    delegate: Line { column: col.index }
+                                }
                             }
                         }
                     }
                 }
 
-                Text {
-                    width: parent.width
-                    visible: root.universalWarning !== "" && root.guarded && root.layoutDone
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                    text: root.universalWarning
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    color: Color.urgent
-                }
-            }
-
-            Flickable {
-                id: flick
-                // Saved once the change has settled: while a lookup starts, the
-                // derived `baseView` can still read true for a moment.
-                onContentYChanged: Qt.callLater(function() {
-                    if (root.baseView && !root.restoring) root.baseY = flick.contentY
-                })
-                onContentHeightChanged: if (root.restoring) root.restoreScroll()
-                anchors.top: messages.bottom
-                anchors.topMargin: root.unit * 0.73
-                anchors.bottom: parent.bottom
-                // Wider than the page by the row padding, so a selected row's
-                // highlight can reach past text aligned with the page edges.
-                x: -root.rowPad
-                width: parent.width + 2 * root.rowPad
-                clip: true
-                contentHeight: list.height
-                boundsBehavior: Flickable.StopAtBounds
-
-                Row {
-                    id: list
-                    x: root.rowPad + root.listOffset
-                    spacing: root.gutter
-
-                    Repeater {
-                        model: root.cols
-
-                        delegate: Column {
-                            id: col
-                            required property var modelData
-                            required property int index
-                            width: root.columnWidth
-
-                            Repeater {
-                                model: col.modelData
-                                delegate: Line { column: col.index }
-                            }
-                        }
+                // Soft edges where the list scrolls on past the view.
+                Rectangle {
+                    anchors.top: flick.top
+                    x: flick.x
+                    width: flick.width
+                    height: Style.space(28)
+                    visible: flick.contentY > 1
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: Color.menu.background }
+                        GradientStop { position: 1; color: Util.alpha(Color.menu.background, 0) }
                     }
                 }
-            }
 
-            // Soft edges where the list scrolls on past the view.
-            Rectangle {
-                anchors.top: flick.top
-                x: flick.x
-                width: flick.width
-                height: Style.space(28)
-                visible: flick.contentY > 1
-                gradient: Gradient {
-                    GradientStop { position: 0; color: Color.menu.background }
-                    GradientStop { position: 1; color: Util.alpha(Color.menu.background, 0) }
+                Rectangle {
+                    anchors.bottom: flick.bottom
+                    x: flick.x
+                    width: flick.width
+                    height: Style.space(40)
+                    visible: flick.contentY + flick.height < flick.contentHeight - 1
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: Util.alpha(Color.menu.background, 0) }
+                        GradientStop { position: 1; color: Color.menu.background }
+                    }
                 }
-            }
 
-            Rectangle {
-                anchors.bottom: flick.bottom
-                x: flick.x
-                width: flick.width
-                height: Style.space(40)
-                visible: flick.contentY + flick.height < flick.contentHeight - 1
-                gradient: Gradient {
-                    GradientStop { position: 0; color: Util.alpha(Color.menu.background, 0) }
-                    GradientStop { position: 1; color: Color.menu.background }
+                // Full text of a row that does not fit its column.
+                Rectangle {
+                    visible: root.tip !== null
+                    x: root.tip ? Math.max(0, Math.min(root.tip.x, page.width - width)) : 0
+                    y: !root.tip ? 0 : root.tip.y + height <= page.height ? root.tip.y
+                                     : Math.max(0, root.tip.above - height)
+                    z: 2
+                    width: Math.min(tipMeasure.width + Style.space(20), page.width * 0.6)
+                    height: Math.min(tipText.implicitHeight + Style.space(12), page.height * 0.3)
+                    clip: true
+
+                    TextMetrics {
+                        id: tipMeasure
+                        font: tipText.font
+                        text: tipText.text
+                    }
+                    radius: root.radius
+                    color: Color.tooltip.background
+                    border.width: 1
+                    border.color: Color.tooltip.border
+
+                    Text {
+                        id: tipText
+                        anchors.centerIn: parent
+                        width: parent.width - Style.space(20)
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 4
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        text: root.tip ? root.tip.combo + "   " + root.tip.text : ""
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        color: Color.tooltip.text
+                    }
                 }
-            }
-
-            // Full text of a row that does not fit its column.
-            Rectangle {
-                visible: root.tip !== null
-                x: root.tip ? Math.max(0, Math.min(root.tip.x, page.width - width)) : 0
-                y: !root.tip ? 0 : root.tip.y + height <= page.height ? root.tip.y
-                                 : Math.max(0, root.tip.above - height)
-                z: 2
-                width: Math.min(tipMeasure.width + Style.space(20), page.width * 0.6)
-                height: Math.min(tipText.implicitHeight + Style.space(12), page.height * 0.3)
-                clip: true
-
-                TextMetrics {
-                    id: tipMeasure
-                    font: tipText.font
-                    text: tipText.text
-                }
-                radius: root.radius
-                color: Color.tooltip.background
-                border.width: 1
-                border.color: Color.tooltip.border
 
                 Text {
-                    id: tipText
-                    anchors.centerIn: parent
-                    width: parent.width - Style.space(20)
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 4
-                    elide: Text.ElideRight
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: flick.top
+                    visible: root.loaded && !root.lines.length && !root.loadError
                     textFormat: Text.PlainText
-                    text: root.tip ? root.tip.combo + "   " + root.tip.text : ""
+                    text: root.pinned ? "No binding uses " + root.pinnedCombo
+                        : root.searching ? "Nothing matches “" + root.query + "”"
+                        : "No keybindings for " + (root.activeMods.length ? root.activeMods.join(" + ") : "keys without a modifier")
                     font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    color: Color.tooltip.text
+                    font.pixelSize: Style.font.title
+                    color: Util.alpha(root.fg, 0.6)
                 }
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.top: flick.top
-                visible: root.loaded && !root.lines.length && !root.loadError
-                textFormat: Text.PlainText
-                text: root.pinned ? "No binding uses " + root.pinnedCombo
-                    : root.searching ? "Nothing matches “" + root.query + "”"
-                    : "No keybindings for " + (root.activeMods.length ? root.activeMods.join(" + ") : "keys without a modifier")
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                color: Util.alpha(root.fg, 0.6)
             }
         }
 
@@ -1078,7 +1205,7 @@ Item {
         readonly property int at: column * root.perColumn + index
         readonly property bool active: root.activeIndex === at
         width: root.columnWidth
-        height: Math.round(Style.font.title * 2.1)
+        height: root.lineHeight
 
         onActiveChanged: {
             if (!active || root.cursor !== at) return

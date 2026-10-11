@@ -136,11 +136,17 @@ Item {
         var sym = (layout.keys[pinnedKey] || [""])[0]
         return sym ? (layout.chars[sym] || sym.replace(/^XF86/, "")) : pinnedKey
     }
-    readonly property int columnCount: Math.max(1, Math.min(gridColumns, Math.ceil(lines.length / 6)))
+    // Search results and pressed shortcuts stay in one column, so rows do
+    // not jump between columns while typing; the full list and held
+    // modifiers use the grid.
+    readonly property int columnCount: columnsFor(lines.length)
+    function columnsFor(count) {
+        return lookup.key !== "" || query.length > 0 ? 1 : Math.max(1, Math.min(gridColumns, Math.ceil(count / 6)))
+    }
     readonly property var cols: Model.columns(lines, columnCount)
     readonly property int perColumn: cols.length ? cols[0].length : 1
     function perColumnFor(count) {
-        return count ? Math.ceil(count / Math.max(1, Math.min(gridColumns, Math.ceil(count / 6)))) : 1
+        return count ? Math.ceil(count / columnsFor(count)) : 1
     }
 
     // Everything one list row slot shows, from the inputs in one go: the row
@@ -217,7 +223,10 @@ Item {
     readonly property real frameMaxHeight: fullscreen ? panel.height
         : Math.min(panel.height - 2 * Math.max(Style.space(24), panel.height * 0.07),
                    Math.max(600, panel.height * 0.7))
-    readonly property real heightUnit: frameMaxHeight * 0.29 / 6.25
+    // The keyboard takes 29 % of the height, up to 34 % on short screens so
+    // its labels stay readable.
+    readonly property real keyboardShare: 0.29 + 0.05 * Math.max(0, Math.min(1, (1000 - frameMaxHeight) / 400))
+    readonly property real heightUnit: frameMaxHeight * keyboardShare / 6.25
     readonly property real keyboardWidth: heightUnit * keyboard.units
     readonly property real maxContent: fullscreen ? panel.width - Style.space(64)
         : Math.min(panel.width * 0.8, panel.width - 2 * Style.space(48)) - 2 * cardInset
@@ -230,7 +239,8 @@ Item {
     readonly property real contentWidth: fullscreen
         ? Math.min(maxContent, Math.max(panel.width * 0.5, columnsWidth(gridColumns)))
         : Math.min(maxContent, columnsWidth(gridColumns))
-    readonly property real lineHeight: Math.round(Style.font.title * 2.1)
+    // Roomier rows in the card; fullscreen keeps the denser overview.
+    readonly property real lineHeight: Math.round(Style.font.title * (fullscreen ? 2.1 : 2.4))
     // Sized for the full list, so the card does not change size while filtering.
     readonly property int fullColumns: Math.max(1, Math.min(gridColumns, Math.ceil(allLines.length / 6)))
     readonly property real cardHeight: Math.min(frameMaxHeight,
@@ -961,6 +971,31 @@ Item {
                 }
             }
 
+            // What the button does, while pointed at.
+            Rectangle {
+                visible: sizeArea.containsMouse
+                z: 3
+                anchors.right: sizeButton.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: sizeButton.verticalCenter
+                width: sizeTip.implicitWidth + Style.space(20)
+                height: sizeTip.implicitHeight + Style.space(10)
+                radius: root.radius
+                color: Color.tooltip.background
+                border.width: 1
+                border.color: Color.tooltip.border
+
+                Text {
+                    id: sizeTip
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: (root.fullscreen ? "Window" : "Fullscreen") + "   Ctrl+Shift+F"
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    color: Color.tooltip.text
+                }
+            }
+
             Item {
                 id: page
                 width: root.contentWidth
@@ -1083,11 +1118,11 @@ Item {
                     // sits right under it, and with three columns it is the middle one.
                     x: (parent.width - width) / 2
                     width: root.columnWidth
-                    height: Math.round(root.unit * 0.8)
+                    height: Math.max(Math.round(root.unit * 0.8), Math.round(Style.font.title * 2))
                     radius: root.radius
                     color: Util.alpha(root.fg, 0.04)
                     border.width: 1
-                    border.color: root.typing ? Util.alpha(root.accent, 0.8) : Util.alpha(root.fg, 0.22)
+                    border.color: root.typing ? Util.alpha(root.accent, 0.8) : Util.alpha(root.fg, 0.32)
 
                     MouseArea {
                         anchors.fill: parent
@@ -1102,7 +1137,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "󰍉"
                         font.pixelSize: Style.font.heading
-                        color: root.typing ? root.accent : Util.alpha(root.fg, 0.55)
+                        color: root.typing ? root.accent : Util.alpha(root.fg, 0.65)
                     }
 
                     TextInput {
@@ -1137,7 +1172,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: "Search   ·   Ctrl+F"
                             font: search.font
-                            color: Util.alpha(root.fg, 0.6)
+                            color: Util.alpha(root.fg, 0.65)
                         }
                     }
                 }
@@ -1179,16 +1214,16 @@ Item {
                                 : root.inList ? ["←↑↓→ to browse   ·   ctrl+tab to move between keyboard, search and list   ·   esc " + (root.searching ? "back to the search" : "back to the keyboard"),
                                                  "←↑↓→ to browse   ·   ctrl+tab next place   ·   esc back"]
                                 : root.pinned && !root.pinnedExact && root.lines.length
-                                  ? [root.pinnedCombo + " is not bound on its own   ·   bindings that use it:", root.pinnedCombo + " alone is not bound:"]
-                                : ["press a shortcut to see what it does   ·   hold modifiers to filter   ·   ctrl+tab to move between keyboard, search and list   ·   ctrl+shift+f fullscreen   ·   esc closes",
-                                   "press a shortcut   ·   hold modifiers to filter   ·   ctrl+tab next place   ·   ctrl+shift+f fullscreen   ·   esc closes"]
+                                  ? ["No exact binding for " + root.pinnedCombo + "   ·   matches with more modifiers:", "No exact " + root.pinnedCombo + "   ·   with more modifiers:"]
+                                : ["hold any key or combination to see its keybindings   ·   ctrl+tab to move between keyboard, search and list   ·   ctrl+shift+f fullscreen   ·   esc closes",
+                                   "hold any key or combination to see its keybindings   ·   ctrl+tab next place   ·   ctrl+shift+f fullscreen   ·   esc closes"]
                             width: Math.min(implicitWidth, parent.width)
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                             text: texts[1] && hintMeasure.advanceWidth > parent.width ? texts[1] : texts[0]
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.body
-                            color: Util.alpha(root.fg, 0.66)
+                            color: Util.alpha(root.fg, 0.72)
                         }
 
                         // Without the submap, pressing a shortcut here would run it: lookups

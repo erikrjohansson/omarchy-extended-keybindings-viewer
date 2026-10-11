@@ -21,6 +21,8 @@ Item {
     property color accent: Color.accent
     property color fg: Color.foreground
     property color base: Color.background
+    // Smallest keycap label (px), so small screens stay readable.
+    property int minLabel: 8
 
     signal keyHovered(string id)
     signal keyClicked(string id)
@@ -179,14 +181,14 @@ Item {
     function partFill(id, inLayer) {
         return inLayer ? Util.alpha(accent, 0.32)
              : lit.indexOf(id) !== -1 ? Util.alpha(accent, 0.32)
-             : Util.alpha(fg, bound[id] === true ? 0.035 : 0.015)
+             : Util.alpha(fg, bound[id] === true ? 0.035 : 0.02)
     }
     function partEdge(id, inLayer) {
         return inLayer || lit.indexOf(id) !== -1 ? accent
-             : Util.alpha(fg, hoverKey === id ? 0.8 : bound[id] === true ? 0.5 : 0.13)
+             : Util.alpha(fg, hoverKey === id ? 0.8 : bound[id] === true ? 0.5 : 0.22)
     }
     function partInk(id) {
-        return lit.indexOf(id) !== -1 ? accent : Util.alpha(fg, bound[id] === true ? 0.92 : 0.32)
+        return lit.indexOf(id) !== -1 ? accent : Util.alpha(fg, bound[id] === true ? 0.92 : 0.5)
     }
 
     // The mouse: two buttons over a rounded body, the wheel between them with
@@ -211,9 +213,9 @@ Item {
             topRightRadius: mouse.topRadius
             bottomLeftRadius: width / 2
             bottomRightRadius: width / 2
-            color: Util.alpha(keyboard.fg, 0.015)
+            color: Util.alpha(keyboard.fg, 0.02)
             border.width: 1
-            border.color: Util.alpha(keyboard.fg, 0.13)
+            border.color: Util.alpha(keyboard.fg, 0.22)
         }
 
         component Part: Rectangle {
@@ -229,7 +231,7 @@ Item {
                 textFormat: Text.PlainText
                 text: part.label
                 font.family: keyboard.fontFamily
-                font.pixelSize: Math.round(keyboard.unit * 0.22)
+                font.pixelSize: Math.max(keyboard.minLabel - 1, Math.round(keyboard.unit * 0.22))
                 color: keyboard.partInk(part.partId)
             }
 
@@ -374,12 +376,12 @@ Item {
             readonly property real radius: Math.max(3, keyboard.unit * 0.1)
             readonly property color fill: inLayer ? Util.alpha(keyboard.accent, 0.32)
                                         : isLit ? Util.alpha(keyboard.accent, 0.32)
-                                        : Util.alpha(keyboard.fg, isBound ? 0.035 : 0.015)
+                                        : Util.alpha(keyboard.fg, isBound ? 0.035 : 0.02)
             readonly property color edge: inLayer || isLit ? keyboard.accent
-                                        : Util.alpha(keyboard.fg, hovered ? 0.8 : isBound ? 0.5 : 0.13)
+                                        : Util.alpha(keyboard.fg, hovered ? 0.8 : isBound ? 0.5 : 0.22)
             readonly property real edgeWidth: inLayer || isLit ? 1.5 : 1
             readonly property color ink: inLayer || isLit ? keyboard.accent
-                                       : Util.alpha(keyboard.fg, isBound || mod ? 0.92 : 0.32)
+                                       : Util.alpha(keyboard.fg, isBound || mod ? 0.92 : 0.5)
 
             x: modelData.x * keyboard.unit + gap / 2
             y: modelData.y * keyboard.unit + gap / 2
@@ -439,7 +441,8 @@ Item {
                 textFormat: Text.PlainText
                 text: cap.label[0]
                 font.family: keyboard.fontFamily
-                font.pixelSize: Math.round(keyboard.unit * (cap.label[0].length > 1 ? 0.24 : 0.3))
+                font.pixelSize: Math.max(cap.label[0].length > 1 ? keyboard.minLabel : keyboard.minLabel + 1,
+                                         Math.round(keyboard.unit * (cap.label[0].length > 1 ? 0.24 : 0.3)))
                 color: cap.ink
             }
 
@@ -453,7 +456,7 @@ Item {
                 textFormat: Text.PlainText
                 text: cap.label[1]
                 font.family: keyboard.fontFamily
-                font.pixelSize: Math.round(keyboard.unit * 0.22)
+                font.pixelSize: Math.max(keyboard.minLabel, Math.round(keyboard.unit * 0.22))
                 color: Util.alpha(cap.ink, 0.6)
             }
 

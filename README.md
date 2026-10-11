@@ -12,8 +12,9 @@ Needs one manual step after installing to take over SUPER + K (see
 
 ## Use
 
-- **Press a shortcut** to see what it does. Its keys light up while you hold it.
-- **Hold SUPER, SHIFT, CTRL or ALT** to list the bindings that use them.
+- **Hold any key or combination** to see its keybindings: a full shortcut
+  shows what it does, a single key or modifier (A, SUPER, SHIFT + A…) lists
+  every binding that uses it. Its keys light up while you hold them.
 - **Click or scroll** with modifiers to look up mouse bindings.
 - **Ctrl+Tab** moves between keyboard, search and list; **Ctrl+F** searches;
   **Esc** closes.

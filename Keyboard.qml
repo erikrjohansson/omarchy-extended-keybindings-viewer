@@ -162,6 +162,16 @@ Item {
         return [base, shifted && shifted !== base ? shifted : ""]
     }
 
+    // Whether a point (in the keyboard's coordinates) is on a key or a part of
+    // the drawn mouse; the gaps between them and the mouse's body are not.
+    function controlAt(x, y) {
+        var item = childAt(x, y)
+        if (!item) return false
+        if (item !== mouse) return true
+        var part = mouse.childAt(x - mouse.x, y - mouse.y)
+        return !!part && !!part.partId
+    }
+
     // States shared by keys and mouse parts.
     function partFill(id, inLayer) {
         return inLayer ? Util.alpha(accent, 0.32)

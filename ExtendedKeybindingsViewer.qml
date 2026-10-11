@@ -345,7 +345,7 @@ Item {
         for (var i = 0; i < items.length; ++i) {
             if (!items[i].visible) continue
             var p = items[i].mapFromItem(null, mouse.x, mouse.y)
-            if (items[i].contains(p)) return true
+            if (items[i] === keyboard ? keyboard.controlAt(p.x, p.y) : items[i].contains(p)) return true
         }
         return false
     }

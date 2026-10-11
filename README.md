@@ -49,6 +49,16 @@ Prefer to do it yourself? Add this line to `~/.config/hypr/bindings.lua`:
 dofile(os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.erikrjohansson.extended-keybindings-viewer/bindings.lua")
 ```
 
+## Update
+
+```bash
+omarchy plugin update io.github.erikrjohansson.extended-keybindings-viewer && omarchy restart hyprctl && omarchy restart shell
+```
+
+Omarchy shows the code changes first and asks before updating. The viewer
+stays loaded between openings, so the shell only runs the new version after a
+restart; reloading Hyprland picks up any change to the SUPER + K setup.
+
 ## Remove
 
 ```bash

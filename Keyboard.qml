@@ -19,6 +19,9 @@ Item {
     property bool pointerArmed: true   // false while the pointer has not moved
     property string fontFamily: Style.font.family
     property color accent: Color.accent
+    // Fill and edge of lit keys; their labels are `accent`, like the text of
+    // a selected list row.
+    property color highlight: accent
     property color fg: Color.foreground
     property color base: Color.background
     // Smallest keycap label (px), so small screens stay readable.
@@ -179,12 +182,12 @@ Item {
 
     // States shared by keys and mouse parts.
     function partFill(id, inLayer) {
-        return inLayer ? Util.alpha(accent, 0.32)
-             : lit.indexOf(id) !== -1 ? Util.alpha(accent, 0.32)
+        return inLayer ? Util.alpha(highlight, 0.32)
+             : lit.indexOf(id) !== -1 ? Util.alpha(highlight, 0.32)
              : Util.alpha(fg, bound[id] === true ? 0.035 : 0.02)
     }
     function partEdge(id, inLayer) {
-        return inLayer || lit.indexOf(id) !== -1 ? accent
+        return inLayer || lit.indexOf(id) !== -1 ? highlight
              : Util.alpha(fg, hoverKey === id ? 0.8 : bound[id] === true ? 0.5 : 0.22)
     }
     function partInk(id) {
@@ -374,10 +377,10 @@ Item {
             readonly property bool hovered: keyboard.hoverKey === keyId
             readonly property real gap: keyboard.unit * 0.09
             readonly property real radius: Math.max(3, keyboard.unit * 0.1)
-            readonly property color fill: inLayer ? Util.alpha(keyboard.accent, 0.32)
-                                        : isLit ? Util.alpha(keyboard.accent, 0.32)
+            readonly property color fill: inLayer ? Util.alpha(keyboard.highlight, 0.32)
+                                        : isLit ? Util.alpha(keyboard.highlight, 0.32)
                                         : Util.alpha(keyboard.fg, isBound ? 0.035 : 0.02)
-            readonly property color edge: inLayer || isLit ? keyboard.accent
+            readonly property color edge: inLayer || isLit ? keyboard.highlight
                                         : Util.alpha(keyboard.fg, hovered ? 0.8 : isBound ? 0.5 : 0.22)
             readonly property real edgeWidth: inLayer || isLit ? 1.5 : 1
             readonly property color ink: inLayer || isLit ? keyboard.accent

@@ -65,8 +65,39 @@ Item {
     // The shortcut being pressed, set in one assignment so that a press or a
     // release changes the list once: { key, mods }.
     property var lookup: ({ key: "", mods: [] })
-    readonly property string pinnedKey: lookup.key
-    readonly property var pinnedMods: lookup.mods
+    // What the page shows: the held modifiers and the shortcut. It follows
+    // the keys at once, except when something is let go while modifiers are
+    // still held: letting go of Super + Enter passes through Super alone,
+    // which would redraw the whole list for a few milliseconds and make it
+    // blink. That waits a moment for the rest of the keys (or the next
+    // shortcut) instead.
+    property var view: ({ lookup: { key: "", mods: [] }, held: [] })
+    readonly property string pinnedKey: view.lookup.key
+    readonly property var pinnedMods: view.lookup.mods
+
+    function showKeys() {
+        settle.stop()
+        if (view.lookup.key === lookup.key && view.lookup.mods.join() === lookup.mods.join()
+                && view.held.join() === heldMods.join()) return
+        view = { lookup: lookup, held: heldMods }
+    }
+
+    property var lastKeys: ({ key: "", held: [] })
+    function keysChanged() {
+        var last = lastKeys
+        lastKeys = { key: lookup.key, held: heldMods }
+        var letGo = (last.key !== "" && lookup.key === "")
+            || last.held.some(function(m) { return heldMods.indexOf(m) === -1 })
+        if (letGo && lookup.key === "" && heldMods.length) settle.restart()
+        else showKeys()
+    }
+    onLookupChanged: keysChanged()
+    onHeldModsChanged: keysChanged()
+    Timer { id: settle; interval: 150; onTriggered: root.showKeys() }
+
+    // Keys other than modifiers held down, newest last: when the shown one
+    // is let go, the one still held shows again.
+    property var keysDown: []
     property bool typing: false
     // Keyboard focus is in one of three places: the keyboard (every key is a
     // lookup), the search box (`typing`), or the list (`inList`, arrows move).
@@ -98,7 +129,7 @@ Item {
     // With nothing held or clicked the list shows every binding. Holding (or
     // clicking) modifiers shows the bindings that use them, exact ones first.
     // While typing in the search, modifiers are for typing, not a filter.
-    readonly property var filterHeld: typing ? [] : heldMods
+    readonly property var filterHeld: typing ? [] : view.held
     readonly property bool pinned: pinnedKey !== ""
     readonly property var activeMods: pinned ? pinnedMods : modOrder.filter(function(m) {
         return baseMods.indexOf(m) !== -1 || filterHeld.indexOf(m) !== -1
@@ -108,12 +139,15 @@ Item {
     // Read straight from the inputs (not from the derived properties above,
     // which update one after another) and reused while the view is the same:
     // every new list updates every row.
-    readonly property var lines: viewLines(bindings, lookup, baseMods, filterHeld, query)
+    readonly property var lines: viewLines(bindings, view.lookup, baseMods, filterHeld, query)
     property var linesMemo: ({ bindings: null, key: "", lines: [] })
     function viewLines(all, look, base, held, text) {
         var mods = look.key ? look.mods : modOrder.filter(function(m) {
             return base.indexOf(m) !== -1 || held.indexOf(m) !== -1
         })
+        // The full list is the one already made for the page's grid; read
+        // before the memo, which could otherwise keep it from before a reload.
+        if (!look.key && !mods.length && !text) return allLines
         var key = (look.key ? "key " + look.key : "text " + text) + " mods " + mods.join("+")
         var memo = linesMemo
         if (memo.bindings !== all || memo.key !== key) {
@@ -141,7 +175,7 @@ Item {
     // modifiers use the grid.
     readonly property int columnCount: columnsFor(lines.length)
     function columnsFor(count) {
-        return lookup.key !== "" || query.length > 0 ? 1 : Math.max(1, Math.min(gridColumns, Math.ceil(count / 6)))
+        return view.lookup.key !== "" || query.length > 0 ? 1 : Math.max(1, Math.min(gridColumns, Math.ceil(count / 6)))
     }
     readonly property var cols: Model.columns(lines, columnCount)
     readonly property int perColumn: cols.length ? cols[0].length : 1
@@ -184,6 +218,11 @@ Item {
     readonly property color accent: Color.menu.selectedText
     readonly property color selectedFill: Color.menu.selectedBackground
     readonly property color selectedBorder: Color.menu.selectedBorder
+    // Fill and edge of lit keys and the focused search box: the theme's
+    // accent, the colour of a selected menu row in every theme (as its text in
+    // Omarchy's own themes, as its fill in themes with light selected text).
+    // Key labels stay the selected text colour, like the row's text.
+    readonly property color highlight: Color.accent
     readonly property string fontFamily: Style.font.menuFamily
     readonly property real radius: Math.min(Style.cornerRadius, Style.space(10))
     // One grid for the whole page: three list columns sized to the longest
@@ -279,6 +318,7 @@ Item {
         clearHeld()
         query = ""
         lookup = { key: "", mods: [] }
+        showKeys()
         typing = false
         inList = false
         cursor = -1
@@ -286,6 +326,7 @@ Item {
         hoverKey = ""
         // Kept loaded between openings, but each opening starts at the top.
         baseY = 0
+        baseCursor = -1
         flick.contentY = 0
         opened = true
         disarmPointer()
@@ -348,6 +389,7 @@ Item {
         opened = false
         clearHeld()
         clearPin()
+        showKeys()
         pinnedButton = ""
         restoring = false
         leftHold.stop()
@@ -418,9 +460,23 @@ Item {
         if (next.slice().sort().join() !== heldMods.slice().sort().join()) heldMods = next
     }
 
+    // Keys let go elsewhere send no release here: when neither the keyboard
+    // nor the search box has focus any more (checked once focus has settled,
+    // so moving between them does not count), everything held is forgotten.
+    function focusMoved() {
+        if (keyCatcher.activeFocus || search.activeFocus) return
+        leftHold.stop()
+        wheelRelease.stop()
+        pinnedButton = ""
+        clearHeld()
+        clearPin()
+        showKeys()
+    }
+
     function clearHeld() {
+        if (keysDown.length) keysDown = []
         modKeysDown = {}
-        heldMods = []
+        if (heldMods.length) heldMods = []
     }
 
     // Modifiers clicked on the drawn keyboard count as held for every lookup.
@@ -486,7 +542,7 @@ Item {
 
     function cancelButton() {
         leftHold.stop()
-        if (pinnedButton && pinnedKey === pinnedButton) clearPin()
+        if (pinnedButton && lookup.key === pinnedButton) clearPin()
         pinnedButton = ""
     }
 
@@ -532,14 +588,14 @@ Item {
     }
 
     function releasePart(id) {
-        if (pinnedKey === id) clearPin()
+        if (lookup.key === id) clearPin()
     }
 
     // A scroll has no release; the lookup shows while scrolling goes on.
     Timer {
         id: wheelRelease
         interval: 700
-        onTriggered: if (/^WHEEL_/.test(root.pinnedKey)) root.clearPin()
+        onTriggered: if (/^WHEEL_/.test(root.lookup.key)) root.clearPin()
     }
 
     function clearPin() {
@@ -548,6 +604,7 @@ Item {
 
     function startSearch() {
         clearPin()
+        showKeys()
         inList = false
         search.forceActiveFocus()
     }
@@ -561,6 +618,7 @@ Item {
     // the first row is selected once there is one.
     function enterList(at) {
         clearPin()
+        showKeys()
         hoverIndex = -1
         hoverKey = ""
         cursor = at !== undefined ? at : lines.length ? Math.max(0, cursor) : -1
@@ -599,7 +657,7 @@ Item {
         if (isBound(heldMods, layout.codes[event.nativeScanCode] || "")) return false
         if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && mods === "CTRL+SHIFT")) previousPlace()
         else if (event.key === Qt.Key_Tab) nextPlace()
-        else if (event.key === Qt.Key_F && mods === "CTRL") { if (typing) stopSearch(); else startSearch() }   // Ctrl+F again leaves, like Esc
+        else if (event.key === Qt.Key_F && mods === "CTRL") { if (!event.isAutoRepeat) { if (typing) stopSearch(); else startSearch() } }   // Ctrl+F again leaves, like Esc
         else if (event.key === Qt.Key_F && mods === "CTRL+SHIFT") { if (!event.isAutoRepeat) toggleFullscreen() }
         else return false
         return true
@@ -640,13 +698,20 @@ Item {
     // Reads the inputs directly: derived properties may not have caught up yet.
     onLinesChanged: {
         disarmPointer()
-        var exact = lookup.key !== "" && lines.length > 0 && lines[0].mods.join("+") === lookup.mods.join("+")
-        cursor = (query.length > 0 || inList || exact) && lines.length ? 0 : -1
+        var exact = view.lookup.key !== "" && lines.length > 0 && lines[0].mods.join("+") === view.lookup.mods.join("+")
+        cursor = lines === allLines && inList && baseCursor >= 0 && baseCursor < lines.length ? baseCursor
+            : (query.length > 0 || inList || exact) && lines.length ? 0 : -1
         hoverIndex = -1
         if (!lines.length && !heldMods.length) inList = false
         Qt.callLater(ensureCursorVisible)
     }
-    onCursorChanged: Qt.callLater(ensureCursorVisible)
+    // The selected row of the full list, for coming back to it after a
+    // temporary view.
+    property int baseCursor: -1
+    onCursorChanged: {
+        if (lines === allLines) baseCursor = cursor
+        Qt.callLater(ensureCursorVisible)
+    }
     onPerColumnChanged: Qt.callLater(ensureCursorVisible)
     onLineHeightChanged: Qt.callLater(ensureCursorVisible)
 
@@ -666,9 +731,12 @@ Item {
     // Full text of the active row when it is cut off, in page coordinates:
     // under the row, or above it (`above`) when there is no room below.
     // Derived from the state, so it follows scrolling and reused rows.
+    // Only for a row pointed at or moved to in the list: a pressed shortcut
+    // selecting a cut-off row would otherwise flash it on every press.
+    readonly property bool tipWanted: hoverIndex >= 0 || inList
     readonly property var tip: {
         var i = activeIndex
-        if (!opened || i < 0 || !activeLine) return null
+        if (!opened || i < 0 || !activeLine || !tipWanted) return null
         if (comboMeasure.advanceWidth <= rowComboWidth && descMeasure.advanceWidth <= columnWidth - rowComboWidth) return null
         var rowY = flick.y + (i % perColumn) * lineHeight - flick.contentY
         if (rowY + lineHeight / 2 < flick.y || rowY + lineHeight / 2 > flick.y + flick.height) return null
@@ -682,14 +750,14 @@ Item {
         font.family: root.fontFamily
         font.pixelSize: Style.font.title
         font.weight: Font.Medium
-        text: root.activeLine ? root.activeLine.combo : ""
+        text: root.tipWanted && root.activeLine ? root.activeLine.combo : ""
     }
 
     TextMetrics {
         id: descMeasure
         font.family: root.fontFamily
         font.pixelSize: Style.font.title
-        text: root.activeLine ? root.activeLine.text : ""
+        text: root.tipWanted && root.activeLine ? root.activeLine.text : ""
     }
 
 
@@ -1023,8 +1091,14 @@ Item {
                     Keys.onPressed: function(event) {
                         root.syncMods(event, true)
                         event.accepted = true
+                        // A modifier added while a key is held shows that key
+                        // with the modifiers now held.
                         if (root.modForEvent(event)) {
-                            if (!event.isAutoRepeat) root.clearPin()
+                            if (!event.isAutoRepeat) {
+                                var held = root.keysDown.length ? root.keysDown[root.keysDown.length - 1] : ""
+                                if (held) root.pin(root.heldMods, held)
+                                else root.clearPin()
+                            }
                             return
                         }
                         if (root.navigate(event)) return
@@ -1040,20 +1114,29 @@ Item {
                             root.leaveList(false)
                         }
                         if (plain && event.key === Qt.Key_Escape) {
-                            if (root.pinned) root.clearPin()
+                            if (root.lookup.key) root.clearPin()
                             else if (root.searching) root.query = ""
                             else root.dismiss()
                             return
                         }
-                        if (name) root.pin(root.heldMods, name)
+                        // A held key repeating is no new press: what shows
+                        // must not depend on the repeat rate.
+                        if (!name || event.isAutoRepeat) return
+                        root.keysDown = root.keysDown.filter(function(k) { return k !== name }).concat([name])
+                        root.pin(root.heldMods, name)
                     }
                     Keys.onReleased: function(event) {
                         root.syncMods(event, false)
                         event.accepted = true
-                        if (!event.isAutoRepeat && root.pinned && root.layout.codes[event.nativeScanCode] === root.pinnedKey)
-                            root.clearPin()
+                        var name = root.layout.codes[event.nativeScanCode] || ""
+                        if (event.isAutoRepeat || !name) return
+                        root.keysDown = root.keysDown.filter(function(k) { return k !== name })
+                        if (root.lookup.key !== name) return
+                        var still = root.keysDown.length ? root.keysDown[root.keysDown.length - 1] : ""
+                        if (still) root.pin(root.heldMods, still)
+                        else root.clearPin()
                     }
-                    onActiveFocusChanged: if (!activeFocus && !root.typing) root.clearHeld()
+                    onActiveFocusChanged: if (!activeFocus) Qt.callLater(root.focusMoved)
                 }
 
                 Item {
@@ -1102,6 +1185,7 @@ Item {
                     fontFamily: root.fontFamily
                     fg: root.fg
                     accent: root.accent
+                    highlight: root.highlight
                     base: Color.menu.background
                     pointerArmed: root.pointerArmed
                     onKeyHovered: function(id) { root.hoverKey = id }
@@ -1122,7 +1206,7 @@ Item {
                     radius: root.radius
                     color: Util.alpha(root.fg, 0.04)
                     border.width: 1
-                    border.color: root.typing ? Util.alpha(root.accent, 0.8) : Util.alpha(root.fg, 0.32)
+                    border.color: root.typing ? Util.alpha(root.highlight, 0.8) : Util.alpha(root.fg, 0.32)
 
                     MouseArea {
                         anchors.fill: parent
@@ -1137,7 +1221,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "󰍉"
                         font.pixelSize: Style.font.heading
-                        color: root.typing ? root.accent : Util.alpha(root.fg, 0.65)
+                        color: root.typing ? root.highlight : Util.alpha(root.fg, 0.65)
                     }
 
                     TextInput {
@@ -1154,7 +1238,13 @@ Item {
                         font.pixelSize: Style.font.title
                         clip: true
                         onTextEdited: root.query = text
-                        onActiveFocusChanged: root.typing = activeFocus
+                        onActiveFocusChanged: {
+                            root.typing = activeFocus
+                            // Keys held when typing starts are let go while
+                            // typing, where their releases are not followed.
+                            if (activeFocus && root.keysDown.length) root.keysDown = []
+                            if (!activeFocus) Qt.callLater(root.focusMoved)
+                        }
                         Keys.onPressed: function(event) {
                             root.syncMods(event, true)
                             if (root.modForEvent(event)) return

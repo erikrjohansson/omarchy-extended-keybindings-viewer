@@ -42,12 +42,15 @@ function keyLabel(b) {
 // matched against, when different), chars: { keysym: text },
 // codeBinds: { "modmask,KEY": keycode } (KEY as the records print it), universal: count }
 function parseLayout(text) {
-    var out = { layout: "", codes: {}, keys: {}, resKeys: {}, chars: {}, codeBinds: {}, universal: 0 }
+    var out = { layout: "", keymap: "", machine: "", pointer: "", codes: {}, keys: {}, resKeys: {}, chars: {}, codeBinds: {}, universal: 0 }
     var aliases = []
     var lines = String(text || "").split("\n")
     for (var i = 0; i < lines.length; ++i) {
         var f = lines[i].split("\t")
         if (f[0] === "layout") out.layout = f[1] || ""
+        else if (f[0] === "keymap") out.keymap = f[1] || ""
+        else if (f[0] === "machine") out.machine = f[1] || ""
+        else if (f[0] === "pointer") out.pointer = f[1] || ""
         else if (f[0] === "code") out.codes[f[1]] = f[2] || ""
         else if (f[0] === "alias") aliases.push(f)
         else if (f[0] === "res") out.resKeys[f[1]] = [f[2] || "", f[3] || ""]

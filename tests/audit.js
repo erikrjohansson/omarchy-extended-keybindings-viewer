@@ -1,12 +1,17 @@
 // Checks every Omarchy binding against the key map model on this machine:
 // it shows when its modifiers are held, and pressing its key (by keycode)
 // lists it with the exact combination first. Run from the plugin folder:
-//   d=$(mktemp -d); ./extended-keybindings-viewer > $d/records.txt; ./extended-keybindings-viewer keys > $d/layout.txt; node tests/audit.js $d
+//   d=$(mktemp -d); ./extended-keybindings-viewer > $d/records.txt; ./extended-keybindings-viewer keys > $d/layout.txt; node tests/audit.js $d [desktop|laptop|compact]
 const fs=require('fs'), S=process.argv[2];
 const M=new Function(fs.readFileSync('Model.js','utf8').replace('.pragma library','')+';return {parse,list,parseLayout,resolve,keyLabel,symbolOf}')();
-// Keyboard.qml geometry names (ISO), copied logic
+// Keyboard.qml geometry names (ISO) for each form, copied logic
 const names=(p,a,b)=>{const o=[];for(let i=a;i<=b;i++)o.push(p+(i<10?'0':'')+i);return o};
-const drawn=['ESC',...names('FK',1,12),'PRSC','HOME','DELE','TLDE',...names('AE',1,12),'BKSP','TAB',...names('AD',1,12),'RTRN','CAPS',...names('AC',1,11),'BKSL','LFSH','LSGT',...names('AB',1,10),'RTSH','UP','LCTL','LWIN','LALT','SPCE','RALT','RWIN','COMP','RCTL','LEFT','DOWN','RGHT'];
+const form=process.argv[3]||'desktop';
+const main=['TLDE',...names('AE',1,12),'BKSP','TAB',...names('AD',1,12),'RTRN','CAPS',...names('AC',1,11),'BKSL','LFSH','LSGT',...names('AB',1,10),'RTSH','LCTL','LWIN','LALT','SPCE','RALT','RCTL'];
+const drawn=form==='compact' ? ['ESC',...main.filter(n=>n!=='TLDE'),'RWIN','COMP']
+  : form==='laptop' ? ['ESC',...names('FK',1,12),'PRSC','DELE',...main,'UP','LEFT','DOWN','RGHT']
+  : ['ESC',...names('FK',1,12),'PRSC','HOME','DELE',...main,'RWIN','COMP','UP','LEFT','DOWN','RGHT'];
+console.log('form', form);
 const L=M.parseLayout(fs.readFileSync(S+'/layout.txt','utf8'));
 const b=M.resolve(M.parse(fs.readFileSync(S+'/records.txt','utf8')),L,drawn,n=>n);
 const same=(x,y)=>x.join('+')===y.join('+');

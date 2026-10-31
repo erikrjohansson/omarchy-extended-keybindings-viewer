@@ -21,6 +21,11 @@ Needs one manual step after installing to take over SUPER + K (see
 - It opens as a card over your desktop; **Ctrl+Shift+F** or the button in its
   top right corner switches to fullscreen and back, and the choice is
   remembered.
+- The **cog** next to it (**Ctrl+Comma**) picks the keyboard drawn: Desktop, Laptop (low
+  function row, small arrows) or 60% (no function row or arrows), and ISO
+  (tall Enter) or ANSI (wide Enter), and a mouse or a touchpad. On Auto, a
+  laptop with its lid open gets the laptop keyboard, a touchpad shows when no
+  mouse is connected, and the key shape follows the layout.
 
 The keys follow your keyboard layout (Å Ä Ö, й, α…) and the colours follow
 your theme.
@@ -91,10 +96,12 @@ all part of Omarchy. `python3` is optional (labels for non-Latin layouts).
 
 ## Notes
 
-- The keyboard is drawn ISO or ANSI from the layout. To force one, create
-  `~/.config/omarchy/extensions/extended-keybindings-viewer.json` containing
-  `{ "shape": "ansi" }`. The fullscreen button saves `"fullscreen"` in the
-  same file.
+- Which keyboard you type on cannot be detected, only whether the computer
+  is a laptop. The settings are kept in
+  `~/.config/omarchy/extensions/extended-keybindings-viewer.json`
+  (`"keyboard": "desktop" | "laptop" | "compact"`, `"shape": "iso" | "ansi"`,
+  `"pointer": "mouse" | "touchpad"`, `"fullscreen"`). A touchpad has no
+  middle or side buttons: bindings on them are listed but light nothing.
 - Shortcuts are matched against Hyprland's first layout, from the main
   keyboard, read each time the overlay opens.
 - Media keys and F13–F24 have no drawn key: they are listed and can be looked

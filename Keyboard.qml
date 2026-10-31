@@ -5,11 +5,17 @@ import qs.Commons
 // The keyboard, drawn by XKB key name (AE01, AC10, LFSH, …) in key units,
 // ANSI or ISO, labelled from the active layout. Modifier keys are identified
 // by what the layout puts on them, so both halves of a modifier light as one.
+// Three forms: "desktop" (function row with PRT/HOME/DEL, arrows apart),
+// "laptop" (low function row, half-height arrows in the bottom row) and
+// "compact" (60 %: no function row, no arrows, ESC left of 1). Then a mouse
+// or a touchpad.
 Item {
     id: keyboard
 
     property real unit: 48
     property bool iso: false
+    property string form: "desktop"
+    property string pointer: "mouse"   // "mouse" or "touchpad", drawn right of the keys
     property var layoutKeys: ({})     // XKB name → [level1, level2] keysyms
     property var chars: ({})          // keysym → the character it types
     property var activeMods: []       // modifiers of the current filter
@@ -29,23 +35,31 @@ Item {
 
     signal keyHovered(string id)
     signal keyClicked(string id)
-    signal partPressed(string id)     // a drawn mouse part pressed / released
+    signal partPressed(string id)     // a part of the drawn mouse or touchpad pressed / released
     signal partReleased(string id)
 
-    // Keyboard 18.5 units wide, then the mouse.
-    readonly property real mouseX: 19.5      // one unit after the arrows, as ESC to F1
-    readonly property real mouseWidth: 2.6
+    // The main block (number row to bottom row) starts at mainTop; the
+    // keys are keysWidth units wide, then the mouse or touchpad.
+    // A laptop's low function row sits as close as the other rows.
+    readonly property real mainTop: form === "laptop" ? 0.6 : form === "compact" ? 0 : 1.25
+    readonly property real keysWidth: form === "desktop" ? 18.5 : 15
+    readonly property real mouseX: keysWidth + 1      // one unit after the keys, as ESC to F1
+    readonly property real mouseWidth: pointer === "touchpad" ? 5.5 : 2.6
     readonly property real units: mouseX + mouseWidth
+    readonly property real rowsHeight: mainTop + 5
+    // The desktop form's size, which the page is laid out for.
+    readonly property real desktopUnits: 18.5 + 1 + 2.6
+    readonly property real desktopHeight: 6.25
     width: unit * units
-    height: unit * 6.25
+    height: unit * rowsHeight
 
-    function row(y, x, keys) {
+    function row(y, x, keys, h) {
         var out = []
         for (var i = 0; i < keys.length; ++i) {
             var k = keys[i]
             if (typeof k === "number") { x += k; continue }
             var w = k.length > 1 ? k[1] : 1
-            out.push({ name: k[0], x: x, y: y, w: w })
+            out.push({ name: k[0], x: x, y: y, w: w, h: h || 1 })
             x += w
         }
         return out
@@ -58,21 +72,35 @@ Item {
     }
 
     readonly property var keys: {
-        var top = row(0, 0, [["ESC"], 1].concat(names("FK", 1, 4), [0.5], names("FK", 5, 8), [0.5],
-                                                names("FK", 9, 12), [0.5, ["PRSC"], ["HOME"], ["DELE"]]))
-        var numbers = row(1.25, 0, [["TLDE"]].concat(names("AE", 1, 12), [["BKSP", 2]]))
-        var bottom = row(5.25, 0, [["LCTL", 1.25], ["LWIN", 1.25], ["LALT", 1.25], ["SPCE", 6.25],
-                                   ["RALT", 1.25], ["RWIN", 1.25], ["COMP", 1.25], ["RCTL", 1.25], 0.5,
-                                   ["LEFT"], ["DOWN"], ["RGHT"]])
+        var t = mainTop
+        var desktop = form === "desktop", laptop = form === "laptop"
+        var top = desktop ? row(0, 0, [["ESC"], 1].concat(names("FK", 1, 4), [0.5], names("FK", 5, 8), [0.5],
+                                                         names("FK", 9, 12), [0.5, ["PRSC"], ["HOME"], ["DELE"]]))
+                : laptop ? row(0, 0, [["ESC"]].concat(names("FK", 1, 12), [["PRSC"], ["DELE"]]), 0.6)
+                : []
+        var numbers = row(t, 0, [[form === "compact" ? "ESC" : "TLDE"]].concat(names("AE", 1, 12), [["BKSP", 2]]))
+        var up = desktop ? [1.5, ["UP"]] : []
+        var bottom = desktop
+            ? row(t + 4, 0, [["LCTL", 1.25], ["LWIN", 1.25], ["LALT", 1.25], ["SPCE", 6.25],
+                             ["RALT", 1.25], ["RWIN", 1.25], ["COMP", 1.25], ["RCTL", 1.25], 0.5,
+                             ["LEFT"], ["DOWN"], ["RGHT"]])
+            : laptop
+            ? row(t + 4, 0, [["LCTL", 1.25], ["LWIN", 1.25], ["LALT", 1.25], ["SPCE", 5.75],
+                             ["RALT", 1.25], ["RCTL", 1.25]]).concat(
+                  // Half-height arrows: ↑ over ↓, ← and → level with ↓.
+                  row(t + 4.5, 12, [["LEFT"]], 0.5), row(t + 4, 13, [["UP"]], 0.5),
+                  row(t + 4.5, 13, [["DOWN"], ["RGHT"]], 0.5))
+            : row(t + 4, 0, [["LCTL", 1.25], ["LWIN", 1.25], ["LALT", 1.25], ["SPCE", 6.25],
+                             ["RALT", 1.25], ["RWIN", 1.25], ["COMP", 1.25], ["RCTL", 1.25]])
         var rows = iso ? [].concat(
-            row(2.25, 0, [["TAB", 1.5]].concat(names("AD", 1, 12))),
-            [{ name: "RTRN", x: 13.5, y: 2.25, w: 1.5, h: 2, shape: "iso-enter" }],
-            row(3.25, 0, [["CAPS", 1.75]].concat(names("AC", 1, 11), [["BKSL"]])),
-            row(4.25, 0, [["LFSH", 1.25], ["LSGT"]].concat(names("AB", 1, 10), [["RTSH", 2.75], 1.5, ["UP"]])))
+            row(t + 1, 0, [["TAB", 1.5]].concat(names("AD", 1, 12))),
+            [{ name: "RTRN", x: 13.5, y: t + 1, w: 1.5, h: 2, shape: "iso-enter" }],
+            row(t + 2, 0, [["CAPS", 1.75]].concat(names("AC", 1, 11), [["BKSL"]])),
+            row(t + 3, 0, [["LFSH", 1.25], ["LSGT"]].concat(names("AB", 1, 10), [["RTSH", 2.75]], up)))
         : [].concat(
-            row(2.25, 0, [["TAB", 1.5]].concat(names("AD", 1, 12), [["BKSL", 1.5]])),
-            row(3.25, 0, [["CAPS", 1.75]].concat(names("AC", 1, 11), [["RTRN", 2.25]])),
-            row(4.25, 0, [["LFSH", 2.25]].concat(names("AB", 1, 10), [["RTSH", 2.75], 1.5, ["UP"]])))
+            row(t + 1, 0, [["TAB", 1.5]].concat(names("AD", 1, 12), [["BKSL", 1.5]])),
+            row(t + 2, 0, [["CAPS", 1.75]].concat(names("AC", 1, 11), [["RTRN", 2.25]])),
+            row(t + 3, 0, [["LFSH", 2.25]].concat(names("AB", 1, 10), [["RTSH", 2.75]], up)))
         return [].concat(top, numbers, rows, bottom)
     }
 
@@ -168,15 +196,16 @@ Item {
     }
 
     // Whether a point (in the keyboard's coordinates) is on a key or a part of
-    // the drawn mouse; the gaps between them and the mouse's body are not.
+    // the drawn mouse or touchpad; the gaps between them and the mouse's body
+    // (or the touchpad's surface) are not.
     function controlAt(x, y) {
         var item = childAt(x, y)
         if (!item) return false
         // The empty corner left of ISO Enter's lower half.
         if (item.modelData && item.modelData.shape === "iso-enter")
             return !(x - item.x < unit * 0.25 && y - item.y > unit - item.gap)
-        if (item !== mouse) return true
-        var part = mouse.childAt(x - mouse.x, y - mouse.y)
+        if (item !== mouse && item !== touchpad) return true
+        var part = item.childAt(x - item.x, y - item.y)
         return !!part && !!part.partId
     }
 
@@ -194,10 +223,45 @@ Item {
         return lit.indexOf(id) !== -1 ? accent : Util.alpha(fg, bound[id] === true ? 0.92 : 0.5)
     }
 
+    component Part: Rectangle {
+        id: part
+        property string partId: ""
+        property string label: ""
+        color: keyboard.partFill(partId, false)
+        border.width: keyboard.lit.indexOf(partId) !== -1 ? 1.5 : 1
+        border.color: keyboard.partEdge(partId, false)
+
+        Text {
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: part.label
+            font.family: keyboard.fontFamily
+            font.pixelSize: Math.max(keyboard.minLabel - 1, Math.round(keyboard.unit * 0.22))
+            color: keyboard.partInk(part.partId)
+        }
+
+        MouseArea {
+            id: partArea
+            anchors.fill: parent
+            hoverEnabled: true
+            acceptedButtons: Qt.LeftButton
+            onPressed: keyboard.partPressed(part.partId)
+            onReleased: keyboard.partReleased(part.partId)
+            onCanceled: keyboard.partReleased(part.partId)
+        }
+
+        readonly property bool pointed: keyboard.pointerArmed && partArea.containsMouse
+        onPointedChanged: {
+            if (pointed) keyboard.keyHovered(partId)
+            else if (keyboard.hoverKey === partId) keyboard.keyHovered("")
+        }
+    }
+
     // The mouse: two buttons over a rounded body, the wheel between them with
     // scroll arrows above and below it.
     Item {
         id: mouse
+        visible: keyboard.pointer !== "touchpad"
         readonly property real u: keyboard.unit
         readonly property real gap: u * 0.09
         readonly property real half: (width - gap) / 2
@@ -206,7 +270,7 @@ Item {
         readonly property real topRadius: Math.min(half, buttonHeight) / 2
         // Spans the main block from the number row to the bottom row.
         x: keyboard.mouseX * u + gap / 2
-        y: u * 1.25 + gap / 2
+        y: u * keyboard.mainTop + gap / 2
         width: keyboard.mouseWidth * u - gap
         height: u * 5 - gap
 
@@ -219,40 +283,6 @@ Item {
             color: Util.alpha(keyboard.fg, 0.02)
             border.width: 1
             border.color: Util.alpha(keyboard.fg, 0.22)
-        }
-
-        component Part: Rectangle {
-            id: part
-            property string partId: ""
-            property string label: ""
-            color: keyboard.partFill(partId, false)
-            border.width: keyboard.lit.indexOf(partId) !== -1 ? 1.5 : 1
-            border.color: keyboard.partEdge(partId, false)
-
-            Text {
-                anchors.centerIn: parent
-                textFormat: Text.PlainText
-                text: part.label
-                font.family: keyboard.fontFamily
-                font.pixelSize: Math.max(keyboard.minLabel - 1, Math.round(keyboard.unit * 0.22))
-                color: keyboard.partInk(part.partId)
-            }
-
-            MouseArea {
-                id: partArea
-                anchors.fill: parent
-                hoverEnabled: true
-                acceptedButtons: Qt.LeftButton
-                onPressed: keyboard.partPressed(part.partId)
-                onReleased: keyboard.partReleased(part.partId)
-                onCanceled: keyboard.partReleased(part.partId)
-            }
-
-            readonly property bool pointed: keyboard.pointerArmed && partArea.containsMouse
-            onPointedChanged: {
-                if (pointed) keyboard.keyHovered(partId)
-                else if (keyboard.hoverKey === partId) keyboard.keyHovered("")
-            }
         }
 
         Part {
@@ -362,6 +392,110 @@ Item {
         }
     }
 
+    // A laptop's touchpad: click zones along its bottom edge, two-finger
+    // scrolling as arrows along its right edge. A touchpad has no middle or
+    // side buttons; bindings on them are only listed.
+    Item {
+        id: touchpad
+        visible: keyboard.pointer === "touchpad"
+        readonly property real u: keyboard.unit
+        readonly property real gap: u * 0.09
+        readonly property real radius: u * 0.22
+        readonly property real clickHeight: u * 0.85
+        // From the top of the Tab row to the bottom of the Shift row.
+        x: keyboard.mouseX * u + gap / 2
+        y: u * (keyboard.mainTop + 1) + gap / 2
+        width: keyboard.mouseWidth * u - gap
+        height: u * 3 - gap
+
+        Rectangle {
+            anchors.fill: parent
+            radius: touchpad.radius
+            color: Util.alpha(keyboard.fg, 0.02)
+            border.width: 1
+            border.color: Util.alpha(keyboard.fg, 0.22)
+        }
+
+        Part {
+            partId: "BTN_LEFT"
+            y: touchpad.height - height
+            width: (touchpad.width - touchpad.gap) / 2
+            height: touchpad.clickHeight
+            bottomLeftRadius: touchpad.radius
+            topLeftRadius: touchpad.gap
+            topRightRadius: touchpad.gap
+            bottomRightRadius: touchpad.gap
+        }
+
+        Part {
+            partId: "BTN_RIGHT"
+            x: (touchpad.width + touchpad.gap) / 2
+            y: touchpad.height - height
+            width: (touchpad.width - touchpad.gap) / 2
+            height: touchpad.clickHeight
+            bottomRightRadius: touchpad.radius
+            topLeftRadius: touchpad.gap
+            topRightRadius: touchpad.gap
+            bottomLeftRadius: touchpad.gap
+        }
+
+        // Two-finger scrolling: up and down at the right edge, sideways (when
+        // bound) along the bottom, above the click zones.
+        Part {
+            partId: "WHEEL_UP"
+            label: "▲"
+            color: "transparent"
+            border.width: 0
+            x: touchpad.width - width - touchpad.u * 0.12
+            y: touchpad.u * 0.14
+            width: touchpad.u * 0.5
+            height: touchpad.u * 0.4
+        }
+
+        Rectangle {
+            x: touchpad.width - touchpad.u * 0.37 - width / 2
+            y: touchpad.u * 0.6
+            width: 1
+            height: touchpad.height - touchpad.clickHeight - touchpad.u * 1.2
+            color: Util.alpha(keyboard.fg, 0.14)
+        }
+
+        Part {
+            partId: "WHEEL_DOWN"
+            label: "▼"
+            color: "transparent"
+            border.width: 0
+            x: touchpad.width - width - touchpad.u * 0.12
+            y: touchpad.height - touchpad.clickHeight - height - touchpad.u * 0.1
+            width: touchpad.u * 0.5
+            height: touchpad.u * 0.4
+        }
+
+        Part {
+            partId: "WHEEL_LEFT"
+            label: "◀"
+            visible: keyboard.bound["WHEEL_LEFT"] === true || keyboard.lit.indexOf(partId) !== -1
+            color: "transparent"
+            border.width: 0
+            x: touchpad.u * 0.12
+            y: touchpad.height - touchpad.clickHeight - height - touchpad.u * 0.1
+            width: touchpad.u * 0.4
+            height: touchpad.u * 0.4
+        }
+
+        Part {
+            partId: "WHEEL_RIGHT"
+            label: "▶"
+            visible: keyboard.bound["WHEEL_RIGHT"] === true || keyboard.lit.indexOf(partId) !== -1
+            color: "transparent"
+            border.width: 0
+            x: touchpad.width - touchpad.u * 1.1
+            y: touchpad.height - touchpad.clickHeight - height - touchpad.u * 0.1
+            width: touchpad.u * 0.4
+            height: touchpad.u * 0.4
+        }
+    }
+
     Repeater {
         model: keyboard.keys
 
@@ -398,7 +532,7 @@ Item {
                 color: cap.fill
                 border.width: cap.edgeWidth
                 border.color: cap.edge
-                }
+            }
 
             // ISO Enter: wide on the upper row, a quarter key narrower below.
             // Built for that key only.
@@ -436,16 +570,19 @@ Item {
                 }
             }
 
-            // One baseline for every keycap label, whatever its size.
+            // One baseline for every keycap label, whatever its size; low keys
+            // (a laptop's function row and arrows) centre theirs.
+            readonly property bool low: (modelData.h || 1) < 1
             Text {
-                x: keyboard.unit * 0.14
-                anchors.baseline: parent.top
+                x: cap.low ? (parent.width - width) / 2 : keyboard.unit * 0.14
+                anchors.baseline: cap.low ? undefined : parent.top
                 anchors.baselineOffset: keyboard.unit * 0.36
+                anchors.verticalCenter: cap.low ? parent.verticalCenter : undefined
                 textFormat: Text.PlainText
                 text: cap.label[0]
                 font.family: keyboard.fontFamily
                 font.pixelSize: Math.max(cap.label[0].length > 1 ? keyboard.minLabel : keyboard.minLabel + 1,
-                                         Math.round(keyboard.unit * (cap.label[0].length > 1 ? 0.24 : 0.3)))
+                                         Math.round(keyboard.unit * (cap.label[0].length > 1 || cap.low ? 0.24 : 0.3)))
                 color: cap.ink
             }
 

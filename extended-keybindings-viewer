@@ -4,8 +4,8 @@
 # extended-keybindings-viewer          Omarchy's keybinding records (label<TAB>dispatcher<TAB>arg),
 #                         from its own Super+K parser, so the key map lists exactly
 #                         what `omarchy menu keybindings` lists.
-# extended-keybindings-viewer keys     The keyboard: "layout", "code", "alias", "bind", "res",
-#                         "char", "universal" and key lines (see `keys` below).
+# extended-keybindings-viewer keys     The keyboard: "layout", "keymap", "machine", "pointer", "code",
+#                         "alias", "bind", "res", "char", "universal" and key lines (see `keys` below).
 # extended-keybindings-viewer setup    Adds the Extended Keybindings Viewer lines to ~/.config/hypr/bindings.lua
 #                         (once) and reloads Hyprland. Run only on request.
 # extended-keybindings-viewer unsetup  Removes that block again and reloads Hyprland.
@@ -120,6 +120,43 @@ for sym in sorted(set(sys.stdin.read().split())):
 ' 2>/dev/null
 }
 
+# "laptop" when this computer is a laptop (or tablet) with its lid open,
+# "docked" when its lid is closed (typed on with an external keyboard), else
+# "desktop". Which keyboard is in use cannot be told.
+machine() {
+  local chassis=""
+  [[ -r /sys/class/dmi/id/chassis_type ]] && chassis=$(</sys/class/dmi/id/chassis_type)
+  if [[ -z $chassis && -r /sys/firmware/devicetree/base/chassis-type ]]; then
+    chassis=$(tr -d '\0' </sys/firmware/devicetree/base/chassis-type)
+  fi
+  # SMBIOS: 8 portable, 9 laptop, 10 notebook, 11 hand held, 14 sub notebook,
+  # 30 tablet, 31 convertible, 32 detachable; device trees name it.
+  case $chassis in
+    8 | 9 | 10 | 11 | 14 | 30 | 31 | 32 | laptop | tablet | convertible | handset) ;;
+    *) echo desktop; return ;;
+  esac
+  local lid
+  for lid in /proc/acpi/button/lid/*/state; do
+    [[ -r $lid ]] && grep -q closed "$lid" && { echo docked; return; }
+  done
+  echo laptop
+}
+
+# "touchpad" when there is a touchpad and no other mouse, "mouse" when there
+# is a mouse, else "none", from Hyprland's pointer devices (JSON on stdin).
+# Not counted as a mouse: a laptop's pointing stick, pens, touchscreens,
+# virtual pointers, and the "-mouse" twin many touchpads list beside their
+# "-touchpad" device. A keyboard's wireless receiver may count as one.
+pointer() {
+  jq -r '
+    [.mice[]?.name // empty | ascii_downcase] as $names
+    | [$names[] | select(test("touchpad|trackpad|clickpad|synaptics")) | sub("-(touchpad|trackpad|clickpad)$"; "")] as $padStems
+    | ($padStems | length) as $pads
+    | ($names | map(select(test("touchpad|trackpad|clickpad|synaptics|trackpoint|pointing-?stick|virtual|ydotool|wacom|stylus|(^|-)pen($|-)|touchscreen|tablet") | not)
+                    | select(sub("-mouse$"; "") as $stem | any($padStems[]; . == $stem) | not)) | length) as $mice
+    | if $pads > 0 and $mice == 0 then "touchpad" elif $mice > 0 then "mouse" else "none" end'
+}
+
 keys() {
   set -o pipefail
   local tool
@@ -159,6 +196,10 @@ keys() {
   [[ -n $kb_file ]] && active_group=$((index + 1))
   out=$(compile_layout "" "$active" "$active_variant" "$active_group") || fail "xkbcli could not compile the $active keyboard layout"
   printf 'layout\t%s\n' "$active"
+  # The layout'"'"'s name (e.g. "Swedish"), from the same keyboard.
+  printf 'keymap\t%s\n' "$(jq -r '(.keyboards | map(select(.main)) | first // .keyboards[0] // {}) | .active_keymap // ""' <<<"$devices" 2>/dev/null)"
+  printf 'machine\t%s\n' "$(machine)"
+  printf 'pointer\t%s\n' "$(pointer <<<"$devices" 2>/dev/null || echo none)"
   printf '%s\n' "$out"
   cut -f2,3 <<<"$(grep -v '^\(code\|alias\)'$'\t' <<<"$out")" | tr '\t' '\n' | symbol_chars
 

@@ -24,7 +24,7 @@ Item {
     readonly property var modOrder: ["SUPER", "SHIFT", "CTRL", "ALT"]
 
     property var rawBindings: []
-    property var layout: ({ layout: "", codes: {}, keys: {}, resKeys: {}, chars: {}, codeBinds: {}, universal: 0 })
+    property var layout: ({ layout: "", keymap: "", machine: "", pointer: "", codes: {}, keys: {}, resKeys: {}, chars: {}, codeBinds: {}, universal: 0 })
     property bool loaded: false
     property string loadError: ""
     readonly property string submapName: "io.github.erikrjohansson.extended-keybindings-viewer"
@@ -35,12 +35,19 @@ Item {
     property string setupState: ""        // "setup" / "not-setup", from the helper
     property bool settingUp: false
     property bool testHooks: false
-    property string shapeSetting: ""      // "iso" / "ansi" from extensions/extended-keybindings-viewer.json
+    // Settings (the cog), kept in extensions/extended-keybindings-viewer.json:
+    // the key shape ("iso" / "ansi"), the keyboard ("desktop" / "laptop" /
+    // "compact") and the pointer ("mouse" / "touchpad"); without one, each
+    // follows what this computer tells.
+    property string shapeSetting: ""
+    property string keyboardSetting: ""
+    property string pointerSetting: ""
+    property bool settingsOpen: false
     // A card over the desktop like Omarchy's menus, or the whole screen; the
     // choice is kept in the same settings file.
     property bool fullscreen: false
-    // A toggle waiting to be saved, and the text to save.
-    property bool saveWanted: false
+    // Changes waiting to be saved (name → value, null to remove), and the text to save.
+    property var pendingSettings: ({})
     property string settingsOut: ""
     // The page is shown once the bindings and the layout have been read (they
     // are read ahead when the shell starts and kept between openings), so the
@@ -55,13 +62,21 @@ Item {
                                                   function(name) { return keyboard.labels(name)[0] })
     // Layouts sold on ANSI keyboards; everything else is drawn as ISO.
     readonly property var ansiLayouts: ["", "us", "ru", "ua", "by", "kz", "kr", "cn", "tw", "th", "il", "ara", "ir", "in", "br"]
+    readonly property bool autoIso: ansiLayouts.indexOf(layout.layout) === -1
     readonly property bool iso: shapeSetting === "iso" ? true
                               : shapeSetting === "ansi" ? false
-                              : ansiLayouts.indexOf(layout.layout) === -1
+                              : autoIso
+    // A laptop's own keyboard on a laptop (lid open), else a desktop one.
+    readonly property string autoForm: layout.machine === "laptop" ? "laptop" : "desktop"
+    readonly property string keyboardForm: ["desktop", "laptop", "compact"].indexOf(keyboardSetting) !== -1
+                                           ? keyboardSetting : autoForm
+    // A touchpad when it is the only pointer, else a mouse.
+    readonly property string autoPointer: layout.pointer === "touchpad" ? "touchpad" : "mouse"
+    readonly property string pointerForm: pointerSetting === "mouse" || pointerSetting === "touchpad"
+                                          ? pointerSetting : autoPointer
     property var baseMods: []
     property var heldMods: []
     property string query: ""
-    // The full shortcut being pressed (modifiers + key), until its key is released.
     // The shortcut being pressed, set in one assignment so that a press or a
     // release changes the list once: { key, mods }.
     property var lookup: ({ key: "", mods: [] })
@@ -265,8 +280,11 @@ Item {
     // The keyboard takes 29 % of the height, up to 34 % on short screens so
     // its labels stay readable.
     readonly property real keyboardShare: 0.29 + 0.05 * Math.max(0, Math.min(1, (1000 - frameMaxHeight) / 400))
-    readonly property real heightUnit: frameMaxHeight * keyboardShare / 6.25
-    readonly property real keyboardWidth: heightUnit * keyboard.units
+    // Sized for the desktop keyboard, whichever is drawn: a laptop's or a
+    // 60% keyboard has keys of the same size, in a smaller keyboard (on a
+    // card limited by its width, they use the room and grow a little).
+    readonly property real heightUnit: frameMaxHeight * keyboardShare / keyboard.desktopHeight
+    readonly property real keyboardWidth: heightUnit * keyboard.desktopUnits
     readonly property real maxContent: fullscreen ? panel.width - Style.space(64)
         : Math.min(panel.width * 0.8, panel.width - 2 * Style.space(48)) - 2 * cardInset
     function columnsIn(width, need) {
@@ -358,28 +376,111 @@ Item {
     Timer { id: showTimer; interval: 600; onTriggered: root.showAnyway = true }
 
     // Saved into the file as it is now (read again first), so other settings
-    // and edits made meanwhile are kept.
-    function toggleFullscreen() {
-        fullscreen = !fullscreen
-        saveWanted = true
+    // and edits made meanwhile are kept. Shown at once.
+    function setSetting(name, value) {
+        var next = {}
+        for (var k in pendingSettings) next[k] = pendingSettings[k]
+        next[name] = value
+        pendingSettings = next
+        showSettings(lastRead)
         settingsFile.reload()
     }
 
-    // A toggle made while the previous one was being written: saved once
+    // The settings menu's groups; "auto" is saved as no setting.
+    readonly property var settingGroups: [
+        { name: "keyboard", options: [{ value: "auto", label: "Auto" }, { value: "desktop", label: "Desktop" },
+                                      { value: "laptop", label: "Laptop" }, { value: "compact", label: "60%" }] },
+        { name: "pointer", options: [{ value: "auto", label: "Auto" }, { value: "mouse", label: "Mouse" },
+                                     { value: "touchpad", label: "Touchpad" }] },
+        { name: "shape", options: [{ value: "auto", label: "Auto" },
+                                   { value: "iso", label: "ISO", tooltip: "Tall Enter key" },
+                                   { value: "ansi", label: "ANSI", tooltip: "Wide Enter key" }] }
+    ]
+
+    function settingValue(row) {
+        var set = [keyboardSetting, pointerSetting, shapeSetting][row]
+        var shown = [keyboardForm, pointerForm, iso ? "iso" : "ansi"][row]
+        return set === shown ? set : "auto"
+    }
+
+    function chooseSetting(row, value) {
+        setSetting(settingGroups[row].name, value === "auto" ? null : value)
+    }
+
+    // The menu by keyboard (Ctrl+,): ↑↓ pick a group, ←→ an option, Enter
+    // or Space chooses it, Esc closes. Opened by a click, there is no cursor
+    // until an arrow is pressed.
+    property int settingsRow: -1
+    property int settingsOption: 0
+
+    function toggleSettings(byKeyboard) {
+        settingsOpen = !settingsOpen
+        settingsRow = settingsOpen && byKeyboard ? 0 : -1
+        if (settingsRow === 0) settingsOption = selectedColumn(0)
+    }
+
+    function selectedColumn(row) {
+        var options = settingGroups[row].options, value = settingValue(row)
+        for (var i = 0; i < options.length; ++i) if (options[i].value === value) return i
+        return 0
+    }
+
+    // Plain keys while the menu is open; true when used.
+    function settingsKey(event) {
+        if (!settingsOpen || heldMods.length) return false
+        var key = event.key
+        if (key === Qt.Key_Escape) { settingsOpen = false; return true }
+        if (key !== Qt.Key_Up && key !== Qt.Key_Down && key !== Qt.Key_Left && key !== Qt.Key_Right
+                && key !== Qt.Key_Return && key !== Qt.Key_Enter && key !== Qt.Key_Space) return false
+        if (settingsRow < 0) {
+            settingsRow = 0
+            settingsOption = selectedColumn(0)
+            return true
+        }
+        if (key === Qt.Key_Up || key === Qt.Key_Down) {
+            settingsRow = Math.max(0, Math.min(settingGroups.length - 1, settingsRow + (key === Qt.Key_Down ? 1 : -1)))
+            settingsOption = selectedColumn(settingsRow)
+        } else if (key === Qt.Key_Left || key === Qt.Key_Right) {
+            var count = settingGroups[settingsRow].options.length
+            settingsOption = Math.max(0, Math.min(count - 1, settingsOption + (key === Qt.Key_Right ? 1 : -1)))
+        } else if (!event.isAutoRepeat) {
+            chooseSetting(settingsRow, settingGroups[settingsRow].options[settingsOption].value)
+        }
+        return true
+    }
+
+    function toggleFullscreen() { setSetting("fullscreen", !fullscreen) }
+
+    // A change made while the previous one was being written: saved once
     // that write has fully ended (a reload asked for during it is ignored).
-    function saveAgain() { if (saveWanted) settingsFile.reload() }
+    function saveAgain() { if (Object.keys(pendingSettings).length) settingsFile.reload() }
+
+    // The settings read, with the changes not yet saved on top.
+    function showSettings(read) {
+        var s = {}
+        for (var k in read) s[k] = read[k]
+        for (k in pendingSettings) s[k] = pendingSettings[k]
+        shapeSetting = String(s.shape || "").toLowerCase()
+        keyboardSetting = String(s.keyboard || "").toLowerCase()
+        pointerSetting = String(s.pointer || "").toLowerCase()
+        fullscreen = s.fullscreen === true
+    }
 
     // The settings as read: an object, or null when the file is not one (it
-    // is then left alone).
+    // is then left alone, and changes last until the shell restarts).
+    property var lastRead: ({})
     function applySettings(parsed) {
-        shapeSetting = String((parsed || {}).shape || "").toLowerCase()
-        if (!saveWanted) {
-            fullscreen = !!parsed && parsed.fullscreen === true
-            return
+        lastRead = parsed || {}
+        showSettings(lastRead)
+        var pending = pendingSettings
+        if (!Object.keys(pending).length || !parsed) return
+        // A write still under way: these are saved once it has ended.
+        if (settingsDir.running) return
+        pendingSettings = ({})
+        for (var k in pending) {
+            if (pending[k] === null) delete parsed[k]
+            else parsed[k] = pending[k]
         }
-        saveWanted = false
-        if (!parsed) return
-        parsed.fullscreen = fullscreen
         settingsOut = JSON.stringify(parsed, null, 2) + "\n"
         if (!settingsDir.running) settingsDir.running = true
     }
@@ -387,6 +488,7 @@ Item {
     // Closed, nothing is left running: the instance stays loaded all session.
     function close() {
         opened = false
+        settingsOpen = false
         clearHeld()
         clearPin()
         showKeys()
@@ -506,10 +608,14 @@ Item {
     }
 
     // A plain left click on something usable (the search box, the list, the
-    // setup notice, the fullscreen button, a key or a part of the drawn mouse) is
-    // for the page; anywhere else it is a lookup like other buttons.
+    // setup notice, the corner buttons and settings, a key or a part of the
+    // drawn mouse) is for the page; anywhere else it is a lookup like other buttons.
+    function onItem(item, mouse) {
+        return item.visible && item.contains(item.mapFromItem(null, mouse.x, mouse.y))
+    }
+
     function onPageControl(mouse) {
-        var items = [searchBox, flick, keyboard, notice, sizeButton]
+        var items = [searchBox, flick, keyboard, notice, sizeButton, settingsButton, settingsMenu]
         for (var i = 0; i < items.length; ++i) {
             if (!items[i].visible) continue
             var p = items[i].mapFromItem(null, mouse.x, mouse.y)
@@ -521,6 +627,13 @@ Item {
     function pressButton(mouse) {
         var mods = modsOf(mouse.modifiers)
         var id = buttonIds[mouse.button]
+        // While the settings are open, a click is for them; outside them it
+        // closes them, and does nothing else.
+        if (settingsOpen) {
+            if (onItem(settingsMenu, mouse) || onItem(settingsButton, mouse) || onItem(sizeButton, mouse)) return false
+            settingsOpen = false
+            return true
+        }
         if (!guarded) return false
         if (!id || (mouse.button === Qt.LeftButton && !mods.length && onPageControl(mouse))) return false
         if (typing) stopSearch()
@@ -648,17 +761,21 @@ Item {
     }
 
     // The key map's own shortcuts (Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+F,
-    // Ctrl+Shift+F for fullscreen), unless a binding uses exactly that
+    // Ctrl+Shift+F for fullscreen, Ctrl+, for the settings), unless a binding uses exactly that
     // combination. Returns true when handled.
     function navigate(event) {
         var mods = heldMods.slice().sort().join("+")
         if (mods !== "CTRL" && mods !== "CTRL+SHIFT") return false
-        if (event.key !== Qt.Key_Tab && event.key !== Qt.Key_Backtab && event.key !== Qt.Key_F) return false
+        // The comma key, also by what the layout puts on the key pressed.
+        var comma = mods === "CTRL" && (event.key === Qt.Key_Comma
+            || (layout.keys[layout.codes[event.nativeScanCode]] || [""])[0] === "comma")
+        if (event.key !== Qt.Key_Tab && event.key !== Qt.Key_Backtab && event.key !== Qt.Key_F && !comma) return false
         if (isBound(heldMods, layout.codes[event.nativeScanCode] || "")) return false
         if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && mods === "CTRL+SHIFT")) previousPlace()
         else if (event.key === Qt.Key_Tab) nextPlace()
         else if (event.key === Qt.Key_F && mods === "CTRL") { if (!event.isAutoRepeat) { if (typing) stopSearch(); else startSearch() } }   // Ctrl+F again leaves, like Esc
         else if (event.key === Qt.Key_F && mods === "CTRL+SHIFT") { if (!event.isAutoRepeat) toggleFullscreen() }
+        else if (comma) { if (!event.isAutoRepeat) { if (typing) stopSearch(); toggleSettings(true) } }
         else return false
         return true
     }
@@ -893,8 +1010,10 @@ Item {
     }
 
     // Optional: ~/.config/omarchy/extensions/extended-keybindings-viewer.json,
-    // {"shape": "iso" | "ansi"} for a keyboard whose shape the layout does not
-    // tell, and {"fullscreen": true}, written by the fullscreen button.
+    // {"shape": "iso" | "ansi", "keyboard": "desktop" | "laptop" | "compact",
+    // "pointer": "mouse" | "touchpad"},
+    // written by the settings menu, and {"fullscreen": true}, by the
+    // fullscreen button.
     readonly property string settingsDirPath: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omarchy/extensions"
 
     FileView {
@@ -907,10 +1026,10 @@ Item {
             try { parsed = JSON.parse(text()) } catch (e) {}
             root.applySettings(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null)
         }
-        // Created on the first toggle only when there is no file yet.
+        // Created on the first change only when there is no file yet.
         onLoadFailed: function(error) { root.applySettings(error === FileViewError.FileNotFound ? {} : null) }
-        onSaveFailed: root.failed("Could not save the fullscreen setting", "")
-        // A toggle made while writing (its reload was skipped) is saved now.
+        onSaveFailed: root.failed("Could not save the settings", "")
+        // A change made while writing (its reload was skipped) is saved now.
         onSaved: Qt.callLater(root.saveAgain)
     }
 
@@ -919,7 +1038,7 @@ Item {
         command: ["mkdir", "-p", root.settingsDirPath]
         onExited: function(code) {
             if (code === 0) settingsFile.setText(root.settingsOut)
-            else root.failed("Could not save the fullscreen setting", "")
+            else root.failed("Could not save the settings", "")
         }
     }
 
@@ -947,7 +1066,7 @@ Item {
         function status(): string {
             return JSON.stringify({ opened: root.opened, loaded: root.loaded, error: root.loadError,
                 guarded: root.guarded, setup: root.setupState, bindings: root.bindings.length,
-                layout: root.layout.layout, iso: root.iso, activeMods: root.activeMods, held: root.heldMods,
+                layout: root.layout.layout, iso: root.iso, form: root.keyboardForm, pointer: root.pointerForm, activeMods: root.activeMods, held: root.heldMods,
                 query: root.query, lines: root.lines.length, cursor: root.cursor,
                 line: root.activeLine ? root.activeLine.combo + " " + root.activeLine.text : "", lit: root.lit,
                 typing: root.typing, inList: root.inList, scrollY: Math.round(flick.contentY) })
@@ -1045,13 +1164,132 @@ Item {
                 }
             }
 
-            // What the button does, while pointed at.
+            // Settings: the keyboard, the pointer and the key shape drawn.
             Rectangle {
-                visible: sizeArea.containsMouse
+                id: settingsButton
+                x: sizeButton.x - width - Style.space(6)
+                y: sizeButton.y
                 z: 3
-                anchors.right: sizeButton.left
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: sizeButton.verticalCenter
+                width: sizeButton.width
+                height: sizeButton.height
+                radius: root.radius
+                readonly property bool lit: settingsArea.containsMouse || root.settingsOpen
+                color: lit ? Util.alpha(root.fg, 0.08) : "transparent"
+                border.width: 1
+                border.color: Util.alpha(root.fg, lit ? 0.5 : 0)
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "󰢻"
+                    font.pixelSize: Math.round(Style.font.heading * 1.3)
+                    color: Util.alpha(root.fg, settingsButton.lit ? 0.92 : 0.66)
+                }
+
+                MouseArea {
+                    id: settingsArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleSettings(false)
+                }
+            }
+
+            // Opaque, as the card behind it may be see-through. Its right edge
+            // is the page's, under the corner buttons.
+            Rectangle {
+                id: settingsMenu
+                visible: root.settingsOpen
+                z: 4
+                x: page.x + page.width - width
+                anchors.top: sizeButton.bottom
+                anchors.topMargin: Style.space(10)
+                width: settingsColumn.implicitWidth + 2 * padding
+                height: settingsColumn.implicitHeight + 2 * padding
+                readonly property real padding: Style.spacing.popupPadding
+                readonly property color fill: Color.menu.background
+                radius: root.radius
+                color: Qt.rgba(fill.r, fill.g, fill.b, 1)
+                border.width: Math.max(1, Style.space(2))
+                border.color: Color.menu.border
+
+                // Clicks and scrolls between the options do nothing, and keys
+                // under it are not pointed at.
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onWheel: function(wheel) { wheel.accepted = true }
+                }
+
+                Column {
+                    id: settingsColumn
+                    x: settingsMenu.padding
+                    y: settingsMenu.padding
+                    spacing: Style.space(10)
+
+                    component Heading: Text {
+                        textFormat: Text.PlainText
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.title
+                        font.weight: Font.Medium
+                        color: root.fg
+                    }
+                    component Hint: Text {
+                        textFormat: Text.PlainText
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                        color: Util.alpha(root.fg, 0.6)
+                    }
+                    component Group: Ui.ButtonGroup {
+                        required property int row
+                        readonly property var group: root.settingGroups[row]
+                        focusable: false
+                        options: group.options
+                        value: root.settingValue(row)
+                        cursorIndex: root.settingsRow === row ? root.settingsOption : -1
+                        foreground: root.fg
+                        background: Color.menu.background
+                        accent: root.accent
+                        fontFamily: root.fontFamily
+                        onChanged: function(value) { root.chooseSetting(row, value) }
+                    }
+
+                    Heading { text: "Keyboard" }
+                    Group { row: 0 }
+                    Hint {
+                        text: "Auto: " + (root.autoForm === "laptop" ? "Laptop, as this is a laptop"
+                            : root.layout.machine === "docked" ? "Desktop, as this laptop's lid is closed"
+                            : "Desktop, as this is not a laptop")
+                    }
+
+                    Item { width: 1; height: Style.space(6) }
+
+                    Heading { text: "Pointer" }
+                    Group { row: 1 }
+                    Hint {
+                        text: "Auto: " + (root.autoPointer === "touchpad" ? "Touchpad, as there is no mouse"
+                            : root.layout.pointer === "mouse" ? "Mouse, as one is connected"
+                            : "Mouse, as no touchpad was found")
+                    }
+
+                    Item { width: 1; height: Style.space(6) }
+
+                    Heading { text: "Key shape" }
+                    Group { row: 2 }
+                    Hint {
+                        text: "Auto: " + (root.autoIso ? "ISO" : "ANSI")
+                            + (root.layout.keymap && root.layout.layout ? ", from the " + root.layout.keymap + " (" + root.layout.layout + ") layout"
+                               : root.layout.layout ? ", from the " + root.layout.layout + " layout" : "")
+                    }
+                }
+            }
+
+            // What a corner button does, while pointed at: under it.
+            Rectangle {
+                readonly property Item button: sizeArea.containsMouse ? sizeButton : settingsButton
+                visible: sizeArea.containsMouse || (settingsArea.containsMouse && !root.settingsOpen)
+                z: 5
+                x: button.x + button.width - width
+                y: button.y + button.height + Style.space(8)
                 width: sizeTip.implicitWidth + Style.space(20)
                 height: sizeTip.implicitHeight + Style.space(10)
                 radius: root.radius
@@ -1063,7 +1301,8 @@ Item {
                     id: sizeTip
                     anchors.centerIn: parent
                     textFormat: Text.PlainText
-                    text: (root.fullscreen ? "Window" : "Fullscreen") + "   Ctrl+Shift+F"
+                    text: settingsArea.containsMouse ? "Settings   Ctrl+Comma"
+                        : (root.fullscreen ? "Window" : "Fullscreen") + "   Ctrl+Shift+F"
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                     color: Color.tooltip.text
@@ -1107,6 +1346,7 @@ Item {
                             }
                             return
                         }
+                        if (root.settingsKey(event)) return
                         if (root.navigate(event)) return
                         var plain = root.heldMods.length === 0
                         var name = root.layout.codes[event.nativeScanCode] || ""
@@ -1182,6 +1422,8 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     unit: root.unit
                     iso: root.iso
+                    form: root.keyboardForm
+                    pointer: root.pointerForm
                     layoutKeys: root.layout.keys
                     chars: root.layout.chars
                     activeMods: root.shownMods
@@ -1255,7 +1497,7 @@ Item {
                             root.syncMods(event, true)
                             if (root.modForEvent(event)) return
                             if (root.navigate(event)) {}
-                            else if (event.key === Qt.Key_Escape) root.stopSearch()
+                            else if (event.key === Qt.Key_Escape) { if (root.settingsOpen) root.settingsOpen = false; else root.stopSearch() }
                             else if (event.key === Qt.Key_Down) root.nextPlace()
                             else if (event.key === Qt.Key_Up) {}
                             else return
@@ -1350,14 +1592,14 @@ Item {
                             color: Util.alpha(root.fg, 0.6)
                         }
 
-                        // Without the submap, pressing a shortcut here would run it: lookups
-                        // stay off and this explains why (and offers the one-click setup).
                         TextMetrics {
                             id: hintMeasure
                             font: hint.font
                             text: hint.texts[0]
                         }
 
+                        // Without the submap, pressing a shortcut here would run it: lookups
+                        // stay off and this explains why (and offers the one-click setup).
                         Row {
                             id: notice
                             anchors.horizontalCenter: parent.horizontalCenter

@@ -785,7 +785,8 @@ Item {
             // does not rebuild.
             if (code === 0 && parsed.length) {
                 if (text !== root.recordsText) { root.recordsText = text; root.rawBindings = parsed }
-            } else root.failed("Could not read the keybindings", recordsErr.text)
+            } else if (!root.recordsTimedOut) root.failed("Could not read the keybindings", recordsErr.text)
+            root.recordsTimedOut = false
             root.loaded = true
             if (!layoutProc.running) loadTimeout.stop()
         }
@@ -802,19 +803,24 @@ Item {
             if (code === 0 && parsed.layout && Object.keys(parsed.keys).length) {
                 if (text !== root.layoutText) { root.layoutText = text; root.layout = parsed }
                 root.universalCount = parsed.universal
-            } else root.failed("Could not read the keyboard layout", layoutErr.text)
+            } else if (!root.layoutTimedOut) root.failed("Could not read the keyboard layout", layoutErr.text)
+            root.layoutTimedOut = false
             root.layoutDone = true
             root.layoutRead = true
             if (!records.running) loadTimeout.stop()
         }
     }
 
+    property bool recordsTimedOut: false
+    property bool layoutTimedOut: false
     Timer {
         id: loadTimeout
         interval: 8000
         onTriggered: {
-            if (records.running) { records.running = false; root.failed("Reading the keybindings timed out", "") }
-            if (layoutProc.running) { layoutProc.running = false; root.layoutDone = true; root.layoutRead = true; root.failed("Reading the keyboard layout timed out", "") }
+            // Killing a process still runs its onExited: the flags keep the
+            // timeout message from being replaced by a generic one there.
+            if (records.running) { root.recordsTimedOut = true; records.running = false; root.failed("Reading the keybindings timed out", "") }
+            if (layoutProc.running) { root.layoutTimedOut = true; layoutProc.running = false; root.layoutDone = true; root.layoutRead = true; root.failed("Reading the keyboard layout timed out", "") }
         }
     }
 

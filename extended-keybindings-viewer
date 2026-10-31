@@ -168,14 +168,17 @@ keys() {
   fi
 
   # Bindings made on a physical key (code:NN) rather than a symbol, from the
-  # Omarchy menu's Lua bind cache: "bind<TAB>modmask<TAB>keycode<TAB>description".
+  # Omarchy menu's Lua bind cache, named the way the menu prints that key
+  # (its parse_keycodes), so they match a record by modifiers and key and not
+  # by description, which the menu may translate:
+  # "bind<TAB>modmask<TAB>keycode<TAB>printed key".
   if $menu_loaded; then
     build_lua_bind_cache
     local entry key
     for entry in "${!LUA_BIND_KEY_MAP[@]}"; do
       key=${LUA_BIND_KEY_MAP[$entry]}
-      [[ $key == code:* ]] && printf 'bind\t%s\t%s\t%s\n' "${entry%%,*}" "${key#code:}" "${entry#*,}"
-    done
+      [[ $key =~ ^code:([0-9]+)$ ]] && printf '%s,%s,%s %s\n' "${entry%%,*}" "$key" "${entry%%,*}" "${BASH_REMATCH[1]}"
+    done | parse_keycodes | awk -F, '{ split($3, at, " "); if ($2 != "") printf "bind\t%s\t%s\t%s\n", at[1], at[2], $2 }' | sort -u
   fi
 
   # Bindings Hyprland keeps active in every submap still run while the key
@@ -225,7 +228,9 @@ has_block() {
   local text
   text=$(file_text && printf x) || return 1
   text=${text%x}
-  [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]]
+  [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]] && return 0
+  # The block ending the file, its final newline taken off by an editor.
+  [[ $text == "${block_text%$'\n'}" || $text == *$'\n'"${block_text%$'\n'}" ]]
 }
 
 # "true" when Hyprland has the overlay's submap binding loaded, else "false".
@@ -284,8 +289,12 @@ unsetup() {
     text=${text%x}
     if [[ $text == "$block_text"* ]]; then
       text=${text#"$block_text"}
-    else
+    elif [[ $text == *$'\n'"$block_text"* ]]; then
       text=${text/$'\n'"$block_text"/$'\n'}
+    elif [[ $text == "${block_text%$'\n'}" ]]; then
+      text=""
+    else
+      text=${text%"${block_text%$'\n'}"}
     fi
     write_bindings "$text" || fail "could not write $bindings_file"
   fi

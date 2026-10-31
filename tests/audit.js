@@ -3,7 +3,7 @@
 // lists it with the exact combination first. Run from the plugin folder:
 //   d=$(mktemp -d); ./extended-keybindings-viewer > $d/records.txt; ./extended-keybindings-viewer keys > $d/layout.txt; node tests/audit.js $d
 const fs=require('fs'), S=process.argv[2];
-const M=new Function(fs.readFileSync('Model.js','utf8').replace('.pragma library','')+';return {parse,list,parseLayout,resolve,keyLabel}')();
+const M=new Function(fs.readFileSync('Model.js','utf8').replace('.pragma library','')+';return {parse,list,parseLayout,resolve,keyLabel,symbolOf}')();
 // Keyboard.qml geometry names (ISO), copied logic
 const names=(p,a,b)=>{const o=[];for(let i=a;i<=b;i++)o.push(p+(i<10?'0':'')+i);return o};
 const drawn=['ESC',...names('FK',1,12),'PRSC','HOME','DELE','TLDE',...names('AE',1,12),'BKSP','TAB',...names('AD',1,12),'RTRN','CAPS',...names('AC',1,11),'BKSL','LFSH','LSGT',...names('AB',1,10),'RTSH','UP','LCTL','LWIN','LALT','SPCE','RALT','RWIN','COMP','RCTL','LEFT','DOWN','RGHT'];
@@ -24,8 +24,11 @@ for (const x of b) {
     if (!pr.length || !same(pr[0].mods,x.mods) || !pr.some(l=>l.bindings.includes(x))) fails.push('press '+x.combo+' ('+x.keyId+')');
   } else {
     unlit.push(x.combo+'  ['+x.key+']  '+x.desc);
-    // only a key the layout has no keycode for may stay unresolved
-    if (!/^XF86/i.test(x.key)) fails.push('unresolved '+x.combo+' ['+x.key+']');
+    // only a key the layout cannot type (no keycode / no such symbol) may stay unresolved
+    // the layout bindings are resolved against (Hyprland's first layout)
+    const sym=M.symbolOf(x.key), res=Object.keys(L.resKeys).length ? L.resKeys : L.keys;
+    const typable=Object.values(res).some(s=>s.some(v=>v&&v.toLowerCase()===sym));
+    if (!/^XF86/i.test(x.key) && typable) fails.push('unresolved '+x.combo+' ['+x.key+']');
   }
 }
 // every single modifier and pair shows something

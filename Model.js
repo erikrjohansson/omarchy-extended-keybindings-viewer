@@ -40,7 +40,7 @@ function keyLabel(b) {
 // `extended-keybindings-viewer keys` output → { layout, codes: { keycode: NAME },
 // keys: { NAME: [level1, level2] } (shown), resKeys (the layout bindings are
 // matched against, when different), chars: { keysym: text },
-// codeBinds: { "modmask,description": keycode }, universal: count }
+// codeBinds: { "modmask,KEY": keycode } (KEY as the records print it), universal: count }
 function parseLayout(text) {
     var out = { layout: "", codes: {}, keys: {}, resKeys: {}, chars: {}, codeBinds: {}, universal: 0 }
     var aliases = []
@@ -66,7 +66,7 @@ function parseLayout(text) {
     return out
 }
 
-var MASKS = { "SHIFT": 1, "CTRL": 4, "ALT": 8, "SUPER": 64 }
+var MASKS = { "SHIFT": 1, "CAPS": 2, "CTRL": 4, "ALT": 8, "MOD2": 16, "MOD3": 32, "SUPER": 64, "MOD5": 128 }
 
 // Mouse bindings → the parts of the drawn mouse.
 var MOUSE = {
@@ -79,6 +79,13 @@ function modmask(mods) {
     var mask = 0
     for (var i = 0; i < mods.length; ++i) mask += MASKS[mods[i]] || 0
     return mask
+}
+
+// Keys Omarchy's list writes by what they show rather than by their symbol.
+var SYMBOLS = { "~": "grave", "^": "asciicircum" }
+
+function symbolOf(key) {
+    return SYMBOLS[key] || key.toLowerCase()
 }
 
 // Sets each binding's keyId to the drawn key it is pressed on with the active
@@ -114,7 +121,7 @@ function resolve(bindings, layout, drawn, label) {
     return bindings.map(function(b) {
         var copy = {}
         for (var k in b) copy[k] = b[k]
-        var code = layout.codeBinds[modmask(b.mods) + "," + b.desc]
+        var code = layout.codeBinds[modmask(b.mods) + "," + b.key]
         var name = code ? layout.codes[code] : ""
         if (name) {
             // A physical key that is not drawn can still be looked up.
@@ -123,22 +130,42 @@ function resolve(bindings, layout, drawn, label) {
             if (text && text !== keyLabel(b)) copy.combo = combo(b.mods, text === "+" ? "PLUS" : text)
         } else {
             var mouse = MOUSE[b.key.toUpperCase()]
-            copy.keyId = mouse !== undefined ? mouse : /MOUSE/i.test(b.key) ? "" : bySym[b.key.toLowerCase()] || ""
+            copy.keyId = mouse !== undefined ? mouse : /MOUSE/i.test(b.key) ? "" : bySym[symbolOf(b.key)] || ""
         }
-        copy.keyNames = name && copy.keyId === name ? [name] : copy.keyId ? keysOf[b.key.toLowerCase()] || [copy.keyId] : []
+        copy.keyNames = name && copy.keyId === name ? [name] : copy.keyId ? keysOf[symbolOf(b.key)] || [copy.keyId] : []
         return copy
     })
 }
 
 function sortMods(mods) {
-    return mods.slice().sort(function(a, b) { return MODS.indexOf(a) - MODS.indexOf(b) })
+    function rank(m) { var at = MODS.indexOf(m); return at === -1 ? MODS.length : at }
+    return mods.slice().sort(function(a, b) { return rank(a) - rank(b) })
 }
 
 function combo(mods, key) {
     return sortMods(mods).concat(key ? [key] : []).join(" + ")
 }
 
+// "SUPER SHIFT" → ["SUPER", "SHIFT"]. Omarchy writes a mask it has no name
+// for as its number ("192"), which is split into its modifiers, so a binding
+// that needs AltGr (Mod5) is never taken for one that does not.
+function modNames(text) {
+    var out = []
+    var words = String(text).split(/\s+/)
+    for (var i = 0; i < words.length; ++i) {
+        var w = words[i]
+        if (/^[0-9]+$/.test(w)) {
+            for (var name in MASKS) if (Number(w) & MASKS[name] && out.indexOf(name) === -1) out.push(name)
+        } else if (MASKS[w] !== undefined && out.indexOf(w) === -1) out.push(w)
+    }
+    return out
+}
+
 // "SUPER SHIFT + RETURN    → Browser<TAB>exec<TAB>omarchy-launch-browser"
+// A row can carry alternative chords for the same action, "SUPER + W /
+// SUPER + Q → Close window": each becomes its own binding (so each key can
+// be looked up), sharing a `group` that list() shows as one line again.
+// Omarchy writes the slash key as SLASH, so " / " only ever separates chords.
 function parse(text) {
     var out = []
     var lines = String(text || "").split("\n")
@@ -146,17 +173,22 @@ function parse(text) {
         var fields = lines[i].split("\t")
         var arrow = fields[0].indexOf("→")
         if (arrow < 0) continue
-        var keys = fields[0].slice(0, arrow).trim()
-        var plus = keys.lastIndexOf(" + ")
-        var mods = plus < 0 ? [] : keys.slice(0, plus).split(/\s+/).filter(function(m) { return MODS.indexOf(m) !== -1 })
-        var key = plus < 0 ? keys : keys.slice(plus + 3).trim()
-        var b = {
-            index: out.length, desc: fields[0].slice(arrow + 1).trim(), mods: sortMods(mods), key: key,
-            keyId: "", dispatcher: fields[1] || "", arg: fields.slice(2).join("\t")
+        var chords = fields[0].slice(0, arrow).split(" / ")
+        var group = out.length
+        for (var c = 0; c < chords.length; ++c) {
+            var keys = chords[c].trim()
+            if (!keys) continue
+            var plus = keys.lastIndexOf(" + ")
+            var mods = plus < 0 ? [] : modNames(keys.slice(0, plus))
+            var key = plus < 0 ? keys : keys.slice(plus + 3).trim()
+            var b = {
+                index: out.length, group: group, desc: fields[0].slice(arrow + 1).trim(), mods: sortMods(mods), key: key,
+                keyId: "", dispatcher: fields[1] || "", arg: fields.slice(2).join("\t")
+            }
+            b.family = family(b)
+            b.combo = combo(b.mods, keyLabel(b))
+            out.push(b)
         }
-        b.family = family(b)
-        b.combo = combo(b.mods, keyLabel(b))
-        out.push(b)
     }
     return out
 }
@@ -215,7 +247,7 @@ function list(bindings, mods, query, key) {
         if (mods && !hasAll(b.mods, mods)) continue
         if (key && (b.keyNames || [b.keyId]).indexOf(key) === -1) continue
         if (terms.length && !matches(b, terms)) continue
-        var merge = b.family ? b.family + "|" + b.mods.join("+") + "|" + signature(b) : "#" + b.index
+        var merge = b.family ? b.family + "|" + b.mods.join("+") + "|" + signature(b) : "#" + b.group + "|" + b.mods.join("+")
         var line = byKey[merge]
         if (!line) {
             line = byKey[merge] = { combo: b.combo, text: b.desc, mods: b.mods, keys: [], bindings: [], family: b.family, sig: signature(b) }
@@ -229,9 +261,14 @@ function list(bindings, mods, query, key) {
         var ln = out[l]
         // A merged line names every key it covers, whether or not the
         // description itself carried the digit or direction.
-        if (ln.bindings.length > 1) {
+        if (ln.bindings.length > 1 && ln.family) {
             if (ln.sig !== ln.bindings[0].desc) ln.text = mergedText(ln.family, ln.sig)
             ln.combo = combo(ln.mods, familyLabel(ln.family, ln.bindings))
+        } else if (ln.bindings.length > 1) {
+            // Alternative chords of one row with the same modifiers, as Omarchy
+            // writes them (chords with other modifiers get their own line, so
+            // a line never lights a combination that is not bound).
+            ln.combo = ln.bindings.map(function(x) { return x.combo }).join(" / ")
         }
     }
     return out

@@ -7,8 +7,19 @@ local viewer_submap = "io.github.erikrjohansson.extended-keybindings-viewer"
 
 -- Opens at once like Omarchy's own menus, without the compositor's layer fade.
 -- (Checked: tools that read this config may give a stand-in `hl` without it.)
+-- With Omarchy's Glassy windows on, see-through themes get frosted glass
+-- behind it like Omarchy's menus (window-glassy.lua lists only its own layers).
 if type(hl.layer_rule) == "function" then
-  hl.layer_rule({ match = { namespace = "^" .. viewer_layer .. "$" }, no_anim = true, animation = "none" })
+  local state_home = os.getenv("XDG_STATE_HOME")
+  if not state_home or state_home == "" then state_home = (os.getenv("HOME") or "") .. "/.local/state" end
+  local glassy = io.open(state_home .. "/omarchy/toggles/hypr/window-glassy.lua", "r")
+  if glassy then glassy:close() end
+  local rule = { match = { namespace = "^" .. viewer_layer .. "$" }, no_anim = true, animation = "none" }
+  if glassy then
+    rule.blur = true
+    rule.ignore_alpha = 0.3
+  end
+  hl.layer_rule(rule)
 end
 
 hl.unbind("SUPER + K")

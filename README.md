@@ -91,7 +91,7 @@ again.
 ## Requirements
 
 Omarchy 4 (Quattro) with the Lua Hyprland config; tested on Omarchy 4.0.4 and
-Hyprland 0.56.2. Uses `bash`, GNU `awk`, `jq`, `hyprctl`, `xkbcli` and `lua`,
+4.5.0rc3 with Hyprland 0.56.2. Uses `bash`, GNU `awk`, `jq`, `hyprctl`, `xkbcli` and `lua`,
 all part of Omarchy. `python3` is optional (labels for non-Latin layouts).
 
 ## Notes
